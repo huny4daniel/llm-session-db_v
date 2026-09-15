@@ -70,6 +70,7 @@ def ingest_batch(
             conn.execute("UPDATE machines SET last_seen_at = ? WHERE id = ?", (now, machine_id))
             return next_offset
         session_id = _get_or_create_session(conn, machine_id, source, ref)
+        first_main_batch = ref.agent_id is None and not _has_main_messages(conn, session_id)
 
         inserted = []
         for line in lines:
@@ -88,6 +89,8 @@ def ingest_batch(
         else:
             _apply_lines(conn, parser, session_id, ref, inserted)
             refresh_session_stats(conn, session_id)
+        if first_main_batch:
+            _link_fork_parent(conn, session_id, source, ref.session_uid)
         conn.execute("UPDATE machines SET last_seen_at = ? WHERE id = ?", (now, machine_id))
     return next_offset
 
@@ -148,6 +151,7 @@ def delete_session(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | N
             "  WHERE machine_id = ? AND source = ? AND session_uid = ?)",
             key,
         )
+        conn.execute("DELETE FROM session_links WHERE source = ? AND child_uid = ?", (session["source"], session["session_uid"]))
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     return session
 
@@ -237,6 +241,40 @@ def _apply_lines(conn, parser, session_id: int, ref, rows: Iterable[tuple[int, s
         if column not in parser.META_LAST_COLUMNS:
             raise IngestError(f"허용되지 않은 세션 컬럼입니다: {column}")
         conn.execute(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
+
+
+def _has_main_messages(conn, session_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM messages WHERE session_id = ? AND agent_id IS NULL LIMIT 1", (session_id,)
+    ).fetchone() is not None
+
+
+def _link_fork_parent(conn, session_id: int, source: str, session_uid: str) -> None:
+    """fork(--fork-session)로 생긴 세션은 원본 메시지의 uuid를 복사해 온다(검증된 CLI 동작).
+
+    가장 많이 겹치는 세션을 부모로 기록하고, 같으면 자기만의 메시지가 가장 적은 세션을 고른다
+    (같은 원본에서 갈라진 형제 세션보다 원본이 우선).
+    """
+    row = conn.execute(
+        """
+        SELECT other.session_id AS parent_id, COUNT(*) AS shared,
+               (SELECT COUNT(*) FROM messages x
+                WHERE x.session_id = other.session_id AND x.agent_id IS NULL AND x.uuid IS NOT NULL) - COUNT(*) AS extra
+        FROM messages mine
+        JOIN messages other ON other.uuid = mine.uuid AND other.session_id != mine.session_id AND other.agent_id IS NULL
+        JOIN sessions p ON p.id = other.session_id AND p.source = ?
+        WHERE mine.session_id = ? AND mine.agent_id IS NULL AND mine.uuid IS NOT NULL
+        GROUP BY other.session_id
+        ORDER BY shared DESC, extra ASC
+        LIMIT 1
+        """,
+        (source, session_id),
+    ).fetchone()
+    if row is not None:
+        conn.execute(
+            "INSERT OR IGNORE INTO session_links (source, child_uid, parent_session_id, created_at) VALUES (?, ?, ?, ?)",
+            (source, session_uid, row["parent_id"], utcnow()),
+        )
 
 
 def _message_exists(conn, session_id: int, uuid: str | None) -> bool:

@@ -125,6 +125,20 @@ def create_app(db_path: str | Path | None = None, runs: runner.RunManager | None
             raise HTTPException(status_code=400, detail=str(e))
         return {"accepted": len(body.lines), "next_offset": next_offset}
 
+    @app.get("/api/agent/sessions/{ref}/source")
+    def agent_session_source(conn: Conn, machine: Machine, ref: str):
+        """다른 PC로 가져가 이어가기(agent pull)용 세션 정보와 메인 파일 원본."""
+        ids = queries.resolve_session_refs(conn, ref)
+        if not ids:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+        if len(ids) > 1:
+            raise HTTPException(status_code=409, detail="여러 세션과 일치합니다. 세션 ID를 더 길게 입력하세요")
+        session = queries.get_session(conn, ids[0])
+        if session["source"] != "claude":
+            raise HTTPException(status_code=400, detail="이 도구의 세션은 아직 가져올 수 없습니다")
+        keys = ("id", "source", "session_uid", "title", "project_path", "machine_name", "last_activity_at")
+        return {"session": {k: session[k] for k in keys}, "lines": queries.main_file_lines(conn, ids[0])}
+
     # ── 로그인 ──────────────────────────────────────────────────
 
     @app.get("/api/auth/status")

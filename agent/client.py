@@ -28,6 +28,10 @@ class Client:
     def ingest(self, payload: dict) -> dict:
         return self._request("POST", "/api/agent/ingest", payload)
 
+    def session_source(self, ref: str) -> dict:
+        """세션 번호 또는 세션 ID(앞부분)로 세션 정보와 메인 파일 원본 줄을 받는다."""
+        return self._request("GET", f"/api/agent/sessions/{urllib.parse.quote(ref, safe='')}/source")
+
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         status, data = self._send(method, path, body)
         if status == 409 and "expected_offset" in data:

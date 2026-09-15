@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent import autostart
 
-from . import auth, config, db, ingest, machines
+from . import auth, config, db, ingest, machines, queries
 
 AUTOSTART_NAME = "llm-session-db-server"
 
@@ -84,19 +84,16 @@ def main(argv: list[str] | None = None) -> int:
 def _delete_sessions(conn: sqlite3.Connection, ids: list[str]) -> int:
     failed = False
     for value in ids:
-        if value.isdigit():
-            rows = conn.execute("SELECT id FROM sessions WHERE id = ?", (int(value),)).fetchall()
-        else:
-            rows = conn.execute("SELECT id FROM sessions WHERE session_uid LIKE ?", (f"{value}%",)).fetchall()
-        if len(rows) != 1:
-            print(f"{'찾을 수 없음' if not rows else '여러 세션과 일치'}: {value}", file=sys.stderr)
+        ids = queries.resolve_session_refs(conn, value)
+        if len(ids) != 1:
+            print(f"{'찾을 수 없음' if not ids else '여러 세션과 일치'}: {value}", file=sys.stderr)
             failed = True
             continue
         session = conn.execute(
             "SELECT s.id, s.session_uid, s.project_path, m.name AS machine,"
             " COALESCE(s.ai_title, s.first_prompt, s.session_uid) AS title"
             " FROM sessions s JOIN machines m ON m.id = s.machine_id WHERE s.id = ?",
-            (rows[0]["id"],),
+            (ids[0],),
         ).fetchone()
         ingest.delete_session(conn, session["id"])
         print(f"삭제: #{session['id']} {session['session_uid'][:8]} [{session['machine']}] {session['project_path']} — {session['title'][:50]}")

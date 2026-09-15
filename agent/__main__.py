@@ -9,6 +9,7 @@ from . import autostart, config
 from .client import Client, OffsetConflict, ServerError
 from .collector import discover_claude
 from .lock import AlreadyRunning, single_instance
+from .pull import pull_session
 from .sync import SyncResult, sync_files
 
 AUTOSTART_NAME = "llm-session-db-agent"
@@ -46,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     install.add_argument("--no-start", action="store_true", help="등록만 하고 지금 시작하지 않음")
     sub.add_parser("uninstall", help="에이전트 자동 실행 등록 해제")
 
+    pull = sub.add_parser("pull", help="서버의 세션을 이 PC로 가져와 이어가기")
+    pull.add_argument("session", help="세션 번호(웹 주소 #/session/<번호>) 또는 세션 ID 앞부분")
+    pull.add_argument("--dir", help="이어갈 작업 폴더 (기본: 원래 프로젝트 폴더가 이 PC에 있으면 그곳, 없으면 현재 폴더)")
+    pull.add_argument("--run", action="store_true", help="가져온 뒤 바로 claude 실행")
+
     args = parser.parse_args(argv)
 
     if args.command == "setup":
@@ -67,6 +73,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         return _status(cfg)
+    if args.command == "pull":
+        client = Client(cfg.server_url, cfg.token)
+        return pull_session(client, Path(cfg.claude_root), args.session, workdir=args.dir, run=args.run)
     if args.command == "install":
         return _install(args)
     return _run(cfg, once=args.once, interval=args.interval, log_file=args.log_file)

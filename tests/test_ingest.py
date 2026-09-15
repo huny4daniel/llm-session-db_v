@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from server import ingest, queries
@@ -132,6 +134,62 @@ def test_deleted_session_is_not_recreated(conn, machine_id):
     assert session_row(conn) is None
     assert conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == 0
     assert ingest.delete_session(conn, session_id) is None
+
+
+def fork_lines(new_uid, extra_prompt=None):
+    """--fork-session 결과처럼 원본 줄의 sessionId만 바꾸고(uuid 유지) 필요하면 새 질문을 덧붙인다."""
+    rows = []
+    for line in samples.main_lines():
+        event = json.loads(line)
+        if event.get("sessionId") == samples.SESSION:
+            event["sessionId"] = new_uid
+        rows.append(json.dumps(event, ensure_ascii=False))
+    if extra_prompt:
+        rows.append(json.dumps({
+            "type": "user", "uuid": f"new-{new_uid[:4]}", "sessionId": new_uid, "timestamp": samples.ts(40),
+            "message": {"role": "user", "content": extra_prompt},
+        }, ensure_ascii=False))
+    return rows
+
+
+def links(conn):
+    return sorted(tuple(r) for r in conn.execute("SELECT child_uid, parent_session_id FROM session_links"))
+
+
+def session_id_of(conn, uid):
+    return conn.execute("SELECT id FROM sessions WHERE session_uid = ?", (uid,)).fetchone()["id"]
+
+
+def test_fork_session_linked_to_parent_by_shared_uuids(conn, machine_id):
+    ingest_all(conn, machine_id, samples.MAIN_KEY, samples.main_lines())
+    parent_id = session_row(conn)["id"]
+
+    child = "22222222-0000-4000-8000-000000000000"
+    ingest_all(conn, machine_id, f"C--pc-b/{child}.jsonl", fork_lines(child, "분기 후 질문"))
+    assert links(conn) == [(child, parent_id)]
+
+    # 같은 원본에서 갈라진 형제: 원본과 첫 분기 모두와 같은 수로 겹치지만 자기 메시지가 없는 원본이 부모
+    sibling = "33333333-0000-4000-8000-000000000000"
+    ingest_all(conn, machine_id, f"C--pc-c/{sibling}.jsonl", fork_lines(sibling))
+    assert links(conn) == sorted([(child, parent_id), (sibling, parent_id)])
+
+    # 분기의 분기: 첫 분기의 새 질문까지 복사하므로 첫 분기가 부모
+    grandchild = "44444444-0000-4000-8000-000000000000"
+    rows = fork_lines(grandchild) + [
+        fork_lines(child, "분기 후 질문")[-1].replace(child, grandchild),
+    ]
+    ingest_all(conn, machine_id, f"C--pc-d/{grandchild}.jsonl", rows)
+    assert (grandchild, session_id_of(conn, child)) in links(conn)
+
+    # 자식을 지우면 링크도 사라진다
+    ingest.delete_session(conn, session_id_of(conn, sibling))
+    assert sibling not in [uid for uid, _ in links(conn)]
+
+
+def test_unrelated_session_has_no_parent(conn, machine_id):
+    ingest_all(conn, machine_id, samples.MAIN_KEY, samples.main_lines())
+    ingest_all(conn, machine_id, samples.SUB_KEY, samples.subagent_lines())  # 서브에이전트 파일은 부모 추정 대상 아님
+    assert links(conn) == []
 
 
 def test_rebuild_all_is_idempotent(conn, machine_id):

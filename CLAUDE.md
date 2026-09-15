@@ -82,19 +82,22 @@ headless (`-p`)
 - 응답 스트리밍 도중 프로세스를 강제 종료하면 **스트리밍된 부분 응답은 세션 파일에 저장되지 않는다**(사용자 메시지만 남음). 파일은 깨지지 않고 이후 resume도 정상.
 
 설계 반영
-- A: 가져온 세션은 현재 폴더 slug에 두면 된다(ID 검색·중복 시 우선순위 모두 충족). 이어간 기록이 원본 파일에 쌓이는 문제를 피하려면 `--fork-session`을 기본으로 한다.
+- A: 가져온 사본은 수집하지 않는 가져오기 폴더에 두고 `--fork-session`으로 이어간다. CLI가 ID로 사본을 찾고, 새 기록은 작업 폴더 기준 새 파일로 생겨 수집된다(적용됨).
 - B: 부분 응답은 UI에만 표시하고 중단 시 유실됨을 안내한다. 도구 승인은 `permission_denials`를 보여주고 허용 도구를 붙여 재실행하는 방식이 가장 단순하다(인라인 승인은 `--permission-prompt-tool` 필요).
 - 수집: 같은 ID 파일이 여러 폴더에 있으면 한 세션(machine·source·session_uid)으로 합쳐지므로 세션 내 메시지 `uuid` 기준으로 중복을 거르고, 대화 뷰는 시간순으로 정렬한다(적용됨).
 
 ### A. 로컬로 가져와서 이어가기
-1. 에이전트가 서버에서 세션 원본을 내려받는다.
-2. 각 이벤트의 `cwd`를 현재 위치로 치환하고, 현재 cwd의 slug 폴더에 저장한다.
-3. `claude --resume <sessionId>` 실행(기본은 `--fork-session`으로 새 세션 ID 발급).
-4. 이어간 세션은 다시 수집되어 원본 세션의 자식(분기)으로 연결된다.
+구현: `agent/pull.py`, `python -m agent pull <세션 번호|세션 ID 앞부분> [--dir 폴더] [--run]`, 서버 `GET /api/agent/sessions/{ref}/source`(PC 토큰 인증), 웹 세션 화면의 가져오기 명령 복사.
 
-- PC별 프로젝트 경로 대응표(machine_id + 프로젝트 → 로컬 경로)를 서버에서 관리한다.
+1. 에이전트가 서버에서 세션 정보와 메인 파일 원본 줄을 받는다.
+2. 이 PC에 원본 세션 파일이 있으면(원래 PC) 가져오지 않고 `claude --resume <uid>`로 그대로 이어간다.
+3. 없으면 `~/.claude/projects/llm-session-db-import/<uid>.jsonl`에 사본을 두고 `claude --resume <uid> --fork-session`으로 이어간다. 사본 폴더는 수집하지 않고, 새 기록은 작업 폴더 기준 새 세션 파일로 생겨 이 PC 에이전트가 수집한다.
+4. 작업 폴더: `--dir` > 이 PC에 있는 원래 프로젝트 폴더 > 현재 폴더. 원래 폴더와 다르면 안내한다.
+5. `--run`이 없으면 실행할 명령만 보여주고(사본 유지), 있으면 바로 실행한 뒤 사본을 지운다.
+
+- 계획했던 PC별 경로 대응표·`cwd` 치환은 실험 결과(ID로 어느 폴더든 찾음, 치환 불필요) 필요 없어 만들지 않았다.
 - 대화 기억만 이동하며 코드 파일은 이동하지 않는다. 같은 저장소가 있는 위치에서 이어가는 것을 전제로 한다.
-- 체크포인트(file-history) 이동은 후순위 확장 기능.
+- 체크포인트(file-history) 이동은 하지 않는다(후순위).
 
 ### B. 웹에서 바로 이어가기
 구현: `server/runner.py`(실행 관리), `app.py`의 `/api/sessions/{id}/runs`·`/api/runs/*`, 웹 UI 세션 화면 하단 "이어서 대화하기".
@@ -117,7 +120,11 @@ headless (`-p`)
 - 서버 PC에서 명령 실행 권한을 웹에 여는 기능이므로 조회 API와 같은 인증(비밀번호 또는 로컬 접속)을 거친다.
 
 ### 분기(fork) 관리
-- 같은 세션을 여러 곳에서 이어가면 기록이 갈라진다. 원본 세션을 덮어쓰지 않고 부모-자식 관계(`parent_session_id`)로 저장한다.
+- 같은 세션을 여러 곳에서 이어가면 기록이 갈라진다. 원본 세션을 덮어쓰지 않고 `session_links`(자식 uid → 부모 세션)로 연결한다.
+- 연결 경로 두 가지
+  - 웹 이어가기: 서버가 실행하며 새 세션 ID를 알므로 바로 기록한다.
+  - 그 밖의 fork(`agent pull`, CLI에서 직접 `--fork-session`): 수집 시 새 세션의 첫 메인 묶음에서 다른 세션과 겹치는 메시지 `uuid`를 찾아 부모로 기록한다. 겹침 수가 많은 세션, 같으면 자기만의 메시지가 적은 세션(형제보다 원본)을 고른다.
+- 세션을 삭제하면 그 세션이 자식인 링크도 지운다.
 
 ## 보안
 
@@ -138,7 +145,7 @@ headless (`-p`)
    - 미완: 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 검증 (4단계 전에 실행)
 2. **원격 접속**: 웹 UI 비밀번호 로그인, 에이전트·서버 백그라운드 자동 실행(로그 파일·중복 실행 방지), `agent status`, Tailscale 연결 안내
 3. **웹 이어가기(B)**: headless CLI 실행 + SSE 스트리밍, 도구 허용 묶음, 중단, fork 부모 연결
-4. **로컬 가져오기(A)**: 경로 대응표, cwd 치환, fork 연결
+4. **로컬 가져오기(A)**: `agent pull`, 가져오기 사본 + fork, uuid 겹침으로 부모 자동 연결
 5. **Codex 지원**: 실제 샘플 기반 파서 작성
 
 ## 개발 규칙
@@ -165,6 +172,8 @@ headless (`-p`)
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
 | `agent/autostart.py` | HKCU Run 키 자동 실행 등록(서버 CLI도 공유). Run 키는 작업 디렉터리를 못 정하므로 `-c`로 프로젝트 경로를 넣어 실행 |
 | `agent/lock.py` | 잠금 파일로 에이전트 중복 실행 방지 |
+| `agent/pull.py` | 서버 세션을 이 PC로 가져와 이어가기(가져오기 사본·작업 폴더 결정·claude 실행) |
+| `agent/claude_cli.py` | claude 실행 파일 찾기·물려받은 세션 환경 변수 제거(서버 웹 이어가기와 공유) |
 | `packaging/agent_entry.py` | 에이전트 exe(PyInstaller) 진입점 |
 | `tests/` | pytest. `tests/samples.py`는 실제 구조를 흉내 낸 합성 세션 |
 
@@ -189,6 +198,7 @@ python -m venv .venv
 python -m agent setup --server http://<서버>:8765 --token <토큰>
 python -m agent run             # 포그라운드 30초 간격, --once는 한 번만
 python -m agent status          # 설정·자동 실행·서버 연결·미전송 파일
+python -m agent pull <번호|ID>  # 서버 세션을 이 PC로 가져와 이어가기(--dir 폴더, --run 바로 실행)
 python -m agent install         # 로그인 시 자동 실행(pythonw, 창 없음) + 지금 시작
 python -m agent uninstall
 

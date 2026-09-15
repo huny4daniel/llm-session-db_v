@@ -9,7 +9,6 @@ CLAUDE.md '검증된 CLI 동작'에 기댄다.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -19,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from agent.claude_cli import child_env
 from agent.collector import IMPORT_FOLDER
 
 from .parsers import claude as claude_parser
@@ -32,14 +32,6 @@ MODELS = ("opus", "sonnet", "haiku")
 MAX_ACTIVE_RUNS = 2
 RUN_RETENTION_SECONDS = 30 * 60
 STDERR_TAIL_CHARS = 4000
-
-# 서버가 Claude Code 세션 안에서 시작되면 물려받는 연결 정보. 자식 CLI가 그 세션에 붙지 않도록 뺀다.
-INHERITED_SESSION_ENV = frozenset({
-    "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "AI_AGENT",
-    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_BRIDGE_SESSION_ID",
-    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-})
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -283,10 +275,6 @@ def build_args(run: Run) -> list[str]:
     if run.model:
         args += ["--model", run.model]
     return args
-
-
-def child_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k not in INHERITED_SESSION_ENV}
 
 
 def translate(line: str) -> dict | None:

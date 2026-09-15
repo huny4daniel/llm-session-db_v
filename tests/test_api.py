@@ -148,6 +148,21 @@ def test_stats(loaded):
     assert data["by_machine"][0]["name"] == "api-pc"
 
 
+def test_agent_session_source(loaded):
+    client, token, session_id = loaded
+    response = client.get(f"/api/agent/sessions/{session_id}/source", headers=auth(token))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session"]["session_uid"] == samples.SESSION
+    assert data["session"]["project_path"] == samples.CWD
+    assert data["lines"] == samples.main_lines()  # 서브에이전트 파일이 아닌 메인 파일 원본
+
+    by_uid = client.get(f"/api/agent/sessions/{samples.SESSION[:8]}/source", headers=auth(token))
+    assert by_uid.json()["session"]["id"] == session_id
+    assert client.get("/api/agent/sessions/zzzz/source", headers=auth(token)).status_code == 404
+    assert client.get(f"/api/agent/sessions/{session_id}/source").status_code == 401
+
+
 def test_delete_session(loaded):
     client, token, session_id = loaded
     assert client.delete(f"/api/sessions/{session_id}").status_code == 200

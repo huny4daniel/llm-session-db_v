@@ -129,6 +129,17 @@ def get_session(conn: sqlite3.Connection, session_id: int) -> dict | None:
     return session
 
 
+def resolve_session_refs(conn: sqlite3.Connection, value: str) -> list[int]:
+    """세션 번호(짧은 숫자) 또는 세션 ID 앞부분으로 찾은 세션 번호 목록."""
+    if value.isdigit() and len(value) < 8:
+        rows = conn.execute("SELECT id FROM sessions WHERE id = ?", (int(value),)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id FROM sessions WHERE session_uid LIKE ? ESCAPE '\\'", (f"{_escape_like(value)}%",)
+        ).fetchall()
+    return [r["id"] for r in rows]
+
+
 def lookup_session(conn: sqlite3.Connection, session_uid: str) -> int | None:
     row = conn.execute(
         "SELECT id FROM sessions WHERE session_uid = ? AND message_count > 0 ORDER BY last_activity_at DESC LIMIT 1",
