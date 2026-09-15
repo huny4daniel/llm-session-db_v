@@ -1,10 +1,15 @@
 import argparse
+import getpass
 import sqlite3
 import sys
+from contextlib import closing
+from pathlib import Path
 
-from . import config, db, ingest, machines
+from agent import autostart
 
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+from . import auth, config, db, ingest, machines
+
+AUTOSTART_NAME = "llm-session-db-server"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -12,13 +17,18 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve = sub.add_parser("serve", help="서버 실행")
-    serve.add_argument("--host", default=config.DEFAULT_HOST)
-    serve.add_argument("--port", type=int, default=config.DEFAULT_PORT)
-    serve.add_argument(
-        "--allow-remote",
-        action="store_true",
-        help="루프백 외 주소 바인딩 허용 (웹 UI 인증이 붙기 전까지는 사설망에서만 사용)",
-    )
+    _add_bind_args(serve)
+    serve.add_argument("--log-file", action="store_true", help="로그를 데이터 폴더의 server.log에 기록(백그라운드 실행용)")
+
+    install = sub.add_parser("install", help="Windows 로그인 시 서버 자동 실행 등록")
+    _add_bind_args(install)
+    install.add_argument("--no-start", action="store_true", help="등록만 하고 지금 시작하지 않음")
+    sub.add_parser("uninstall", help="서버 자동 실행 등록 해제")
+
+    password = sub.add_parser("set-password", help="웹 UI 비밀번호 설정(원격 접속에 필요)")
+    password.add_argument("--stdin", action="store_true", help="표준 입력 첫 줄에서 비밀번호를 읽음")
+    sub.add_parser("clear-password", help="웹 UI 비밀번호 제거(이 PC에서만 접속 가능해짐)")
+
     add = sub.add_parser("add-machine", help="에이전트용 PC 등록 후 토큰 발급")
     add.add_argument("name")
     rotate = sub.add_parser("rotate-token", help="PC 토큰 재발급")
@@ -28,26 +38,24 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     path = config.db_path()
+    db.init_db(path)
 
     if args.command == "serve":
-        if args.host not in LOOPBACK_HOSTS and not args.allow_remote:
-            print(
-                "웹 UI에 아직 인증이 없어 루프백 주소로만 실행할 수 있습니다. "
-                "사설망(Tailscale 등)에서만 쓸 경우 --allow-remote를 붙이세요.",
-                file=sys.stderr,
-            )
-            return 2
-        import uvicorn
+        return _serve(args, path)
 
-        from .app import create_app
-
-        uvicorn.run(create_app(path), host=args.host, port=args.port)
-        return 0
-
-    db.init_db(path)
-    conn = db.connect(path)
-    try:
-        if args.command == "add-machine":
+    with closing(db.connect(path)) as conn:
+        if args.command == "install":
+            return _install(args, conn)
+        if args.command == "uninstall":
+            removed = autostart.unregister(AUTOSTART_NAME)
+            print("자동 실행 등록을 해제했습니다. 실행 중인 서버는 그대로이니 필요하면 직접 종료하세요."
+                  if removed else "등록된 자동 실행이 없습니다.")
+        elif args.command == "set-password":
+            return _set_password(args, conn)
+        elif args.command == "clear-password":
+            auth.clear_password(conn)
+            print("비밀번호를 제거했습니다. 이제 이 PC에서만 웹 UI에 접속할 수 있습니다.")
+        elif args.command == "add-machine":
             try:
                 token = machines.create_machine(conn, args.name)
             except sqlite3.IntegrityError:
@@ -65,11 +73,95 @@ def main(argv: list[str] | None = None) -> int:
             for m in machines.list_machines(conn):
                 print(f"{m['id']:>3}  {m['name']:<20} 세션 {m['session_count']:>5}  마지막 수신 {m['last_seen_at'] or '-'}")
         elif args.command == "rebuild":
-            count = ingest.rebuild_all(conn)
-            print(f"세션 {count}개 재생성 완료")
-    finally:
-        conn.close()
+            print(f"세션 {ingest.rebuild_all(conn)}개 재생성 완료")
     return 0
+
+
+def _add_bind_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", default=config.DEFAULT_HOST, help="기본값: 127.0.0.1(이 PC에서만 접속)")
+    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT)
+
+
+def _remote_bind_without_password(host: str, conn: sqlite3.Connection) -> bool:
+    if host in auth.LOOPBACK_HOSTS or auth.password_enabled(conn):
+        return False
+    print("루프백이 아닌 주소로 열려면 먼저 비밀번호를 설정하세요: python -m server set-password", file=sys.stderr)
+    return True
+
+
+def _serve(args, path: Path) -> int:
+    with closing(db.connect(path)) as conn:
+        if _remote_bind_without_password(args.host, conn):
+            return 2
+        if not auth.password_enabled(conn):
+            print("비밀번호가 설정되지 않아 이 PC에서만 웹 UI에 접속할 수 있습니다.", flush=True)
+
+    import uvicorn
+
+    from .app import create_app
+
+    options = {}
+    if args.log_file:
+        options["log_config"] = _file_log_config(config.data_dir() / "server.log")
+    uvicorn.run(create_app(path), host=args.host, port=args.port, **options)
+    return 0
+
+
+def _install(args, conn: sqlite3.Connection) -> int:
+    if _remote_bind_without_password(args.host, conn):
+        return 2
+    launch = autostart.launch_args("server", ["serve", "--host", args.host, "--port", str(args.port), "--log-file"])
+    try:
+        command = autostart.register(AUTOSTART_NAME, launch)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(f"로그인 시 자동 실행 등록 완료\n  {command}")
+    if not args.no_start:
+        autostart.start_detached(launch)
+        print(f"백그라운드에서 서버를 시작했습니다: http://{args.host}:{args.port}  (로그: {config.data_dir() / 'server.log'})")
+    return 0
+
+
+def _set_password(args, conn: sqlite3.Connection) -> int:
+    if args.stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    else:
+        password = getpass.getpass("새 비밀번호: ")
+        if password != getpass.getpass("비밀번호 확인: "):
+            print("비밀번호가 일치하지 않습니다.", file=sys.stderr)
+            return 1
+    try:
+        auth.set_password(conn, password)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print("비밀번호를 설정했습니다. 기존 로그인은 모두 해제됩니다.")
+    return 0
+
+
+def _file_log_config(path: Path) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"default": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
+        "handlers": {
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": str(path),
+                "maxBytes": 1_000_000,
+                "backupCount": 3,
+                "encoding": "utf-8",
+                "formatter": "default",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["file"], "level": "INFO", "propagate": False},
+            "uvicorn.error": {"level": "INFO"},
+            "uvicorn.access": {"handlers": ["file"], "level": "INFO", "propagate": False},
+        },
+    }
 
 
 if __name__ == "__main__":

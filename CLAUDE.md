@@ -56,7 +56,7 @@
 2. **소스별 파서 분리**: `claude`, `codex` 파서를 독립 모듈로 두고 공통 모델로 변환한다. 알 수 없는 이벤트 타입은 버리지 말고 원본으로만 보관.
 3. **증분 수집**: 파일별 byte offset + mtime + 크기를 기록해 추가된 줄만 전송. 진행 중 세션의 마지막 불완전한 줄(개행 없음)은 다음 수집으로 미룬다.
 4. **멱등 업로드**: 동일 이벤트 재전송 시 중복 저장되지 않게 (machine_id, source, session_id, 줄 offset 또는 uuid) 기준으로 upsert.
-5. **오프라인 대기열**: 서버 연결 실패 시 에이전트가 로컬에 적재 후 재전송.
+5. **대기열 없는 재전송**: 에이전트는 서버에 기록된 파일별 수신 위치(`source_files.next_offset`)부터 보낸다. 서버가 꺼져 있어도 원본 JSONL 자체가 대기열 역할을 하므로 별도 로컬 대기열을 두지 않는다(예외: 오프라인인 동안 CLI가 오래된 세션 파일을 정리하면 그 부분은 유실).
 
 ## 세션 이어가기
 
@@ -81,16 +81,21 @@
 ## 보안
 
 - 세션에는 API 키·토큰·`.env` 내용·소스 코드가 포함될 수 있다.
-- 서버는 Tailscale 인터페이스(또는 localhost)에만 바인딩한다.
-- 에이전트 ↔ 서버 통신은 PC별 발급 토큰으로 인증한다.
+- 서버를 공인 인터넷에 직접 노출하지 않는다. 원격 접속은 Tailscale 사설망으로만 한다.
+- 에이전트 ↔ 서버 통신은 PC별 발급 토큰(DB에는 SHA-256 해시만 저장)으로 인증한다.
+- 웹 UI 조회 API(`server/auth.py`)
+  - 비밀번호 미설정: 루프백에서 온 요청만 허용. 프록시 헤더(`X-Forwarded-For`, `Tailscale-User-Login` 등)가 있으면 원격으로 간주(`tailscale serve` 경유 요청이 루프백으로 보이는 문제 방지).
+  - 비밀번호 설정: 로컬 포함 모든 조회 요청에 로그인 쿠키 필요. PBKDF2-SHA256 해시, HMAC 서명 쿠키(HttpOnly, SameSite=Strict, 30일), 비밀번호 변경 시 서명 키 교체로 전체 로그아웃, 연속 실패 시 일시 잠금.
+  - `serve`/`install`은 비밀번호 없이 루프백 외 주소 바인딩을 거부한다.
+- 이후 상태를 바꾸는 API(웹 이어가기 등)를 추가할 때도 SameSite=Strict 쿠키에 의존하므로 GET으로 부작용을 만들지 않는다.
 - 선택 기능: 저장 시 민감값 패턴 마스킹(원본 보존 원칙과 충돌하므로 설정으로 선택).
 - 토큰·DB 파일·로컬 설정은 저장소에 커밋하지 않는다.
 
 ## 개발 단계
 
-1. **서버 코어**: DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
-   - 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 우선 검증
-2. **원격 에이전트**: 토큰 인증, 증분 업로드, 오프라인 대기열, Tailscale 연결
+1. **서버 코어** (v0.0.1 완료): DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
+   - 미완: 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 검증 (4단계 전에 실행)
+2. **원격 접속**: 웹 UI 비밀번호 로그인, 에이전트·서버 백그라운드 자동 실행(로그 파일·중복 실행 방지), `agent status`, Tailscale 연결 안내
 3. **웹 이어가기(B)**: headless CLI 실행 + WebSocket 스트리밍
 4. **로컬 가져오기(A)**: 경로 대응표, cwd 치환, fork 연결
 5. **Codex 지원**: 실제 샘플 기반 파서 작성
@@ -113,7 +118,11 @@
 | `server/queries.py` | 세션 목록·상세·검색·통계 조회 |
 | `server/app.py` | FastAPI 앱(에이전트 API `/api/agent/*`, 조회 API, 정적 UI) |
 | `server/static/` | 웹 UI(프레임워크 없는 단일 페이지, 해시 라우팅) |
+| `server/auth.py` | 웹 UI 비밀번호·로그인 쿠키·로컬 요청 판별·로그인 시도 제한 |
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
+| `agent/autostart.py` | HKCU Run 키 자동 실행 등록(서버 CLI도 공유). Run 키는 작업 디렉터리를 못 정하므로 `-c`로 프로젝트 경로를 넣어 실행 |
+| `agent/lock.py` | 잠금 파일로 에이전트 중복 실행 방지 |
+| `packaging/agent_entry.py` | 에이전트 exe(PyInstaller) 진입점 |
 | `tests/` | pytest. `tests/samples.py`는 실제 구조를 흉내 낸 합성 세션 |
 
 - 파생 테이블 구조나 파서를 바꾸면 `python -m server rebuild`로 원본에서 다시 만든다.
@@ -126,16 +135,43 @@
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 
-# 서버 (기본 127.0.0.1:8765, DB는 data/sessions.db — LSDB_DATA_DIR로 변경)
-.venv\Scripts\python -m server add-machine home-pc     # 토큰 발급(한 번만 표시)
-.venv\Scripts\python -m server serve
+# 서버 (기본 127.0.0.1:8765, DB·server.log는 data/ — LSDB_DATA_DIR로 변경)
+.venv\Scripts\python -m server add-machine home-pc     # PC별 토큰 발급(한 번만 표시)
+.venv\Scripts\python -m server set-password            # 원격 접속 시 필수(설정하면 로컬도 로그인 필요)
+.venv\Scripts\python -m server serve                   # 포그라운드 실행
+.venv\Scripts\python -m server install                 # 로그인 시 자동 실행 등록 + 지금 백그라운드 시작
+.venv\Scripts\python -m server uninstall
 
-# 에이전트 (설정: ~/.llm-session-db/agent.json — LSDB_AGENT_CONFIG로 변경)
-.venv\Scripts\python -m agent setup --server http://127.0.0.1:8765 --token <토큰>
-.venv\Scripts\python -m agent run            # 30초 간격 반복, --once는 한 번만
+# 에이전트 (설정·agent.log·agent.lock: ~/.llm-session-db/ — LSDB_AGENT_CONFIG로 변경)
+python -m agent setup --server http://<서버>:8765 --token <토큰>
+python -m agent run             # 포그라운드 30초 간격, --once는 한 번만
+python -m agent status          # 설정·자동 실행·서버 연결·미전송 파일
+python -m agent install         # 로그인 시 자동 실행(pythonw, 창 없음) + 지금 시작
+python -m agent uninstall
 
 # 테스트
 .venv\Scripts\python -m pytest
 ```
 
-- 웹 UI 인증이 아직 없어 `serve`는 루프백 주소로만 뜬다. 사설망에서 열 때만 `--host <Tailscale IP> --allow-remote`.
+- 에이전트는 표준 라이브러리만 쓰므로 원격 PC에는 Python과 저장소의 `agent/` 폴더만 있으면 된다.
+- Python이 없는 PC는 GitHub Release의 `LlmSessionAgent_vX.Y.Z.exe`를 쓴다. 명령은 같다(`LlmSessionAgent_vX.Y.Z.exe setup ...`, `status`, `install`). exe로 `install`하면 exe 자신이 자동 실행에 등록되므로 exe를 옮기지 않을 위치에 둔다.
+
+## 릴리즈
+
+- `v*` 태그 푸시 → `.github/workflows/release.yml`이 에이전트 exe를 빌드해 릴리즈에 첨부하고, 같은 major.minor의 기존 릴리즈를 삭제한다.
+- 진입점은 `packaging/agent_entry.py`. 에이전트는 CLI라 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 로그인 자동 실행처럼 콘솔을 직접 띄울 때만 창 숨김).
+- 서버는 이 PC에서 저장소 + venv로 실행하므로 exe로 배포하지 않는다.
+- 로컬 빌드 확인: `.venv\Scripts\pip install pyinstaller` 후 위 워크플로와 같은 옵션으로 `pyinstaller` 실행(`build/`, `dist/`, `*.spec`은 gitignore).
+- `uninstall`은 등록만 해제한다. 이미 실행 중인 프로세스는 직접 종료한다.
+
+## 원격 접속 (Tailscale)
+
+> 개발 PC에 Tailscale이 설치되어 있지 않아 아래 절차는 아직 실제로 검증하지 않았다.
+
+1. 서버 PC와 각 클라이언트 PC에 Tailscale을 설치하고 같은 계정으로 로그인한다.
+2. 서버 PC: `python -m server set-password`
+3. 서버 공개 방법(둘 중 하나)
+   - **권장: `tailscale serve`** — 서버는 기본값(127.0.0.1)으로 두고 `tailscale serve --bg 8765`로 tailnet에만 HTTPS로 노출한다. 바인딩 순서 문제나 방화벽 설정이 없고, HTTPS라 브라우저 클립보드 API도 동작한다. 프록시 경유 요청은 원격으로 판별되어 로그인이 요구된다.
+   - 직접 바인딩 — `python -m server install --host <서버의 Tailscale IP 100.x.y.z>`. 부팅 직후 Tailscale보다 먼저 뜨면 바인딩에 실패할 수 있고, Windows 방화벽 허용이 필요하다. `0.0.0.0`은 같은 LAN에도 열리므로 피한다.
+4. 서버 PC: `python -m server add-machine <클라이언트 이름>`으로 토큰 발급
+5. 클라이언트 PC: `python -m agent setup --server <3에서 정한 주소> --token <토큰>` → `python -m agent status`로 연결 확인 → `python -m agent install`

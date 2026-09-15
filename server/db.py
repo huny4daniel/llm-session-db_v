@@ -3,6 +3,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS machines (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,

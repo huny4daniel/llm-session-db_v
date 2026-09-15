@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 의존성 설치
+        run: |
+          pip install pyinstaller
+
+      # 에이전트는 CLI라 --windowed 대신 콘솔 빌드를 쓰고,
+      # 로그인 자동 실행처럼 콘솔 창을 직접 띄운 경우에만 창을 숨긴다(터미널에서 실행하면 출력이 보임).
+      - name: 에이전트 exe 빌드
+        run: |
+          python -m PyInstaller `
+            --onefile `
+            --console `
+            --hide-console hide-early `
+            --name "LlmSessionAgent_${{ github.ref_name }}" `
+            --paths "." `
+            "packaging/agent_entry.py"
+
+      - name: 같은 부버전 기존 릴리즈 삭제
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          # v5.3.1 → 5.3 (major.minor 추출)
+          MINOR=$(echo "$TAG" | sed 's/^v//' | cut -d. -f1-2)
+
+          # 전체 릴리즈 목록에서 같은 부버전 찾기
+          gh release list --repo ${{ github.repository }} --limit 100 \
+            --json tagName --jq '.[].tagName' | while read t; do
+            TM=$(echo "$t" | sed 's/^v//' | cut -d. -f1-2)
+            if [ "$TM" = "$MINOR" ] && [ "$t" != "$TAG" ]; then
+              echo "기존 릴리즈 삭제: $t"
+              gh release delete "$t" --yes --repo ${{ github.repository }}
+            fi
+          done
+
+      - name: 릴리즈 생성 및 exe 첨부
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: dist/LlmSessionAgent_${{ github.ref_name }}.exe

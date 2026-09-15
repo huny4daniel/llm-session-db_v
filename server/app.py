@@ -1,13 +1,14 @@
+import math
 import sqlite3
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, db, ingest, machines, queries
+from . import auth, config, db, ingest, machines, queries
 from .parsers import PARSERS
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,10 +30,15 @@ class IngestRequest(BaseModel):
     lines: list[IngestLine]
 
 
+class LoginRequest(BaseModel):
+    password: str
+
+
 def create_app(db_path: str | Path | None = None) -> FastAPI:
     path = Path(db_path) if db_path else config.db_path()
     db.init_db(path)
     app = FastAPI(title="llm-session-db", docs_url=None, redoc_url=None, openapi_url=None)
+    limiter = auth.LoginLimiter()
 
     def get_conn():
         conn = db.connect(path)
@@ -43,6 +49,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 
+    def client_host(request: Request) -> str | None:
+        return request.client.host if request.client else None
+
     def get_machine(conn: Conn, authorization: Annotated[str | None, Header()] = None) -> sqlite3.Row:
         scheme, _, token = (authorization or "").partition(" ")
         machine = machines.find_by_token(conn, token) if scheme.lower() == "bearer" and token else None
@@ -52,7 +61,18 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     Machine = Annotated[sqlite3.Row, Depends(get_machine)]
 
-    # ── 에이전트 API ──────────────────────────────────────────────
+    def require_viewer(request: Request, conn: Conn) -> None:
+        if auth.password_enabled(conn):
+            if auth.check_session(conn, request.cookies.get(auth.COOKIE_NAME)):
+                return
+            raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+        if not auth.is_local_request(client_host(request), request.headers):
+            raise HTTPException(
+                status_code=403,
+                detail="원격 접속은 서버에서 비밀번호를 설정한 뒤 사용할 수 있습니다 (python -m server set-password)",
+            )
+
+    # ── 에이전트 API (PC별 토큰) ──────────────────────────────────
 
     @app.get("/api/agent/files")
     def agent_files(conn: Conn, machine: Machine, source: str):
@@ -87,17 +107,58 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         return {"accepted": len(body.lines), "next_offset": next_offset}
 
-    # ── 조회 API ─────────────────────────────────────────────────
+    # ── 로그인 ──────────────────────────────────────────────────
 
-    @app.get("/api/machines")
+    @app.get("/api/auth/status")
+    def auth_status(request: Request, conn: Conn):
+        enabled = auth.password_enabled(conn)
+        if enabled:
+            authenticated = auth.check_session(conn, request.cookies.get(auth.COOKIE_NAME))
+        else:
+            authenticated = auth.is_local_request(client_host(request), request.headers)
+        return {"password_enabled": enabled, "authenticated": authenticated}
+
+    @app.post("/api/auth/login")
+    def login(body: LoginRequest, request: Request, response: Response, conn: Conn):
+        if not auth.password_enabled(conn):
+            raise HTTPException(status_code=400, detail="비밀번호가 설정되어 있지 않습니다")
+        key = client_host(request) or "unknown"
+        wait = limiter.locked_for(key)
+        if wait > 0:
+            raise HTTPException(status_code=429, detail=f"로그인 시도가 너무 많습니다. {math.ceil(wait)}초 후 다시 시도하세요")
+        if not auth.verify_login(conn, body.password):
+            limiter.failure(key)
+            raise HTTPException(status_code=401, detail="비밀번호가 올바르지 않습니다")
+        limiter.success(key)
+        response.set_cookie(
+            auth.COOKIE_NAME,
+            auth.issue_session(conn),
+            max_age=auth.SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return {"ok": True}
+
+    @app.post("/api/auth/logout")
+    def logout(response: Response):
+        response.delete_cookie(auth.COOKIE_NAME, path="/")
+        return {"ok": True}
+
+    # ── 조회 API (로그인 또는 로컬 접속) ───────────────────────────
+
+    viewer = APIRouter(prefix="/api", dependencies=[Depends(require_viewer)])
+
+    @viewer.get("/machines")
     def get_machines(conn: Conn):
         return machines.list_machines(conn)
 
-    @app.get("/api/projects")
+    @viewer.get("/projects")
     def get_projects(conn: Conn):
         return queries.list_projects(conn)
 
-    @app.get("/api/sessions")
+    @viewer.get("/sessions")
     def get_sessions(
         conn: Conn,
         machine_id: int | None = None,
@@ -111,29 +172,31 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             conn, machine_id=machine_id, project_path=project, source=source, q=q, limit=limit, offset=offset
         )
 
-    @app.get("/api/sessions/{session_id}")
+    @viewer.get("/sessions/{session_id}")
     def get_session(conn: Conn, session_id: int):
         session = queries.get_session(conn, session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
         return session
 
-    @app.get("/api/sessions/{session_id}/messages")
+    @viewer.get("/sessions/{session_id}/messages")
     def get_session_messages(conn: Conn, session_id: int, agent_id: str | None = None, include_meta: bool = False):
         messages = queries.session_messages(conn, session_id, agent_id=agent_id, include_meta=include_meta)
         if messages is None:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
         return messages
 
-    @app.get("/api/search")
+    @viewer.get("/search")
     def search(conn: Conn, q: Annotated[str, Query(min_length=1)], limit: Annotated[int, Query(ge=1, le=200)] = 50):
         return queries.search_messages(conn, q, limit=limit)
 
-    @app.get("/api/stats")
+    @viewer.get("/stats")
     def get_stats(conn: Conn, days: Annotated[int, Query(ge=1, le=365)] = 30):
         return queries.stats(conn, days=days)
 
-    # ── 웹 UI ───────────────────────────────────────────────────
+    app.include_router(viewer)
+
+    # ── 웹 UI (화면 셸은 공개, 데이터는 위 API가 보호) ─────────────────
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

@@ -32,7 +32,8 @@ def api(db_path):
     connection = db.connect(db_path)
     token = machines.create_machine(connection, "api-pc")
     connection.close()
-    with TestClient(create_app(db_path)) as client:
+    # 비밀번호 없이 조회 API를 쓰려면 이 PC(루프백)에서 온 요청이어야 한다.
+    with TestClient(create_app(db_path), client=("127.0.0.1", 50000)) as client:
         yield client, token
 
 

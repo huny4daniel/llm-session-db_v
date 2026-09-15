@@ -88,6 +88,13 @@ button, input { font: inherit; color: inherit; }
 .badge { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; line-height: 20px; }
 .list-summary { margin: 0; color: var(--muted); white-space: nowrap; }
 
+/* ── 로그인 ── */
+.login { display: flex; flex-direction: column; gap: 12px; max-width: 360px; margin: 12vh auto 0; padding: 28px 24px; }
+.login-title { margin: 0; font-size: 18px; }
+.login-help { margin: 0; color: var(--ink-2); font-size: 13px; }
+.login-error { min-height: 1.3em; margin: 0; color: var(--error); font-size: 13px; }
+.login .btn { padding-block: 9px; }
+
 /* ── 세션 목록 ── */
 .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; align-items: start; }
 .sidebar {

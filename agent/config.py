@@ -8,6 +8,18 @@ def config_path() -> Path:
     return Path(os.environ.get("LSDB_AGENT_CONFIG", Path.home() / ".llm-session-db" / "agent.json"))
 
 
+def state_dir() -> Path:
+    return config_path().parent
+
+
+def log_path() -> Path:
+    return state_dir() / "agent.log"
+
+
+def lock_path() -> Path:
+    return state_dir() / "agent.lock"
+
+
 def default_claude_root() -> Path:
     return Path.home() / ".claude" / "projects"
 
