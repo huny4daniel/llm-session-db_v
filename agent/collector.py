@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Iterator
 
 MAX_BATCH_BYTES = 1_000_000
+# 서버가 웹 이어가기(가져오기)를 위해 임시로 세션 사본을 두는 폴더. 원본의 복제이므로 수집하지 않는다.
+IMPORT_FOLDER = "llm-session-db-import"
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,8 @@ def discover_claude(root: Path) -> list[LocalFile]:
         return []
     files = []
     for path in [*root.glob("*/*.jsonl"), *root.glob("*/*/subagents/agent-*.jsonl")]:
+        if path.relative_to(root).parts[0] == IMPORT_FOLDER:
+            continue
         try:
             stat = path.stat()
         except OSError:

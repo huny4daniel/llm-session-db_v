@@ -103,7 +103,64 @@ def get_session(conn: sqlite3.Connection, session_id: int) -> dict | None:
         ).fetchone()
         agents.append({**dict(agent), "prompt": prompt["text"][:300] if prompt else None})
     session["agents"] = agents
+
+    parent = conn.execute(
+        """
+        SELECT p.id, COALESCE(p.ai_title, p.first_prompt, p.session_uid) AS title
+        FROM session_links l JOIN sessions p ON p.id = l.parent_session_id
+        WHERE l.source = ? AND l.child_uid = ?
+        """,
+        (session["source"], session["session_uid"]),
+    ).fetchone()
+    session["parent"] = dict(parent) if parent else None
+    session["children"] = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT l.child_uid, l.created_at, c.id, COALESCE(c.ai_title, c.first_prompt, c.session_uid) AS title
+            FROM session_links l
+            LEFT JOIN sessions c ON c.source = l.source AND c.session_uid = l.child_uid AND c.message_count > 0
+            WHERE l.parent_session_id = ?
+            ORDER BY l.created_at
+            """,
+            (session_id,),
+        )
+    ]
     return session
+
+
+def lookup_session(conn: sqlite3.Connection, session_uid: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM sessions WHERE session_uid = ? AND message_count > 0 ORDER BY last_activity_at DESC LIMIT 1",
+        (session_uid,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def main_file_lines(conn: sqlite3.Connection, session_id: int) -> list[str]:
+    """세션 메인 파일의 원본 줄. 같은 세션 파일이 여러 개면 가장 긴 것을 쓴다."""
+    session = conn.execute(
+        "SELECT machine_id, source, session_uid FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if session is None:
+        return []
+    parser = PARSERS[session["source"]]
+    files = conn.execute(
+        "SELECT file_key FROM source_files WHERE machine_id = ? AND source = ? AND session_uid = ?"
+        " ORDER BY next_offset DESC",
+        (session["machine_id"], session["source"], session["session_uid"]),
+    ).fetchall()
+    for row in files:
+        ref = parser.parse_file_key(row["file_key"])
+        if ref is not None and ref.agent_id is None:
+            return [
+                r["line"]
+                for r in conn.execute(
+                    "SELECT line FROM raw_events WHERE machine_id = ? AND source = ? AND file_key = ? ORDER BY byte_offset",
+                    (session["machine_id"], session["source"], row["file_key"]),
+                )
+            ]
+    return []
 
 
 def session_messages(

@@ -1,17 +1,21 @@
+import asyncio
+import json
 import math
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, db, ingest, machines, queries
+from . import auth, config, db, ingest, machines, queries, runner
 from .parsers import PARSERS
 
 STATIC_DIR = Path(__file__).parent / "static"
+SSE_KEEPALIVE_SECONDS = 15
 
 
 class IngestLine(BaseModel):
@@ -34,11 +38,25 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def create_app(db_path: str | Path | None = None) -> FastAPI:
+class RunRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100_000)
+    allowed_tools: list[str] = Field(default_factory=list)
+    model: str | None = None
+
+
+def create_app(db_path: str | Path | None = None, runs: runner.RunManager | None = None) -> FastAPI:
     path = Path(db_path) if db_path else config.db_path()
     db.init_db(path)
     app = FastAPI(title="llm-session-db", docs_url=None, redoc_url=None, openapi_url=None)
     limiter = auth.LoginLimiter()
+
+    def record_fork(parent_session_id: int, child_uid: str) -> None:
+        with closing(db.connect(path)) as conn:
+            ingest.record_fork(conn, parent_session_id, child_uid)
+
+    if runs is None:
+        runs = runner.RunManager(config.claude_command, config.claude_projects_dir(), config.workspace_dir())
+    runs.on_fork = record_fork
 
     def get_conn():
         conn = db.connect(path)
@@ -146,7 +164,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         response.delete_cookie(auth.COOKIE_NAME, path="/")
         return {"ok": True}
 
-    # ── 조회 API (로그인 또는 로컬 접속) ───────────────────────────
+    # ── 조회·조작 API (로그인 또는 로컬 접속) ─────────────────────────
 
     viewer = APIRouter(prefix="/api", dependencies=[Depends(require_viewer)])
 
@@ -172,11 +190,18 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             conn, machine_id=machine_id, project_path=project, source=source, q=q, limit=limit, offset=offset
         )
 
+    @viewer.get("/session-lookup")
+    def session_lookup(conn: Conn, uid: str):
+        return {"id": queries.lookup_session(conn, uid)}
+
     @viewer.get("/sessions/{session_id}")
     def get_session(conn: Conn, session_id: int):
         session = queries.get_session(conn, session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+        session["continue_plan"] = runs.plan(session).describe() if session["source"] == "claude" else None
+        latest = runs.latest_for(session_id)
+        session["latest_run"] = latest.summary() if latest else None
         return session
 
     @viewer.delete("/sessions/{session_id}")
@@ -191,6 +216,66 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if messages is None:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
         return messages
+
+    @viewer.post("/sessions/{session_id}/runs")
+    def start_run(conn: Conn, session_id: int, body: RunRequest):
+        session = queries.get_session(conn, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+        if session["source"] != "claude":
+            raise HTTPException(status_code=400, detail="이 도구의 세션은 아직 웹에서 이어갈 수 없습니다")
+        try:
+            run = runs.start(
+                session, body.prompt, body.allowed_tools, body.model,
+                source_lines=lambda: queries.main_file_lines(conn, session_id),
+            )
+        except runner.RunnerError as e:
+            raise HTTPException(status_code=e.status, detail=str(e))
+        return run.summary()
+
+    @viewer.get("/runs/{run_id}")
+    def get_run(run_id: str):
+        run = runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="실행 기록을 찾을 수 없습니다")
+        return run.summary()
+
+    @viewer.post("/runs/{run_id}/cancel")
+    def cancel_run(run_id: str):
+        run = runs.cancel(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="실행 기록을 찾을 수 없습니다")
+        return run.summary()
+
+    @viewer.get("/runs/{run_id}/events")
+    async def run_events(
+        request: Request,
+        run_id: str,
+        last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
+    ):
+        run = runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="실행 기록을 찾을 수 없습니다")
+        start = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else 0
+
+        async def stream():
+            index = start
+            while True:
+                events, done = await asyncio.to_thread(run.wait_events, index, SSE_KEEPALIVE_SECONDS)
+                for event in events:
+                    yield f"id: {index}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    index += 1
+                if done and index >= len(run.events):
+                    yield "event: end\ndata: {}\n\n"
+                    return
+                if not events:
+                    if await request.is_disconnected():
+                        return
+                    yield ": keepalive\n\n"
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
 
     @viewer.get("/search")
     def search(conn: Conn, q: Annotated[str, Query(min_length=1)], limit: Annotated[int, Query(ge=1, le=200)] = 50):

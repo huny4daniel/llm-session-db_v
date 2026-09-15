@@ -86,6 +86,15 @@ CREATE INDEX IF NOT EXISTS messages_raw ON messages (raw_event_id);
 -- 같은 세션 파일이 여러 프로젝트 폴더에 있을 때(가져오기·복사) 메시지 중복 판별용
 CREATE INDEX IF NOT EXISTS messages_uuid ON messages (session_id, uuid);
 
+-- 웹 이어가기로 새 세션(fork)이 생겼을 때의 부모 관계. 자식 세션은 수집되기 전일 수 있어 uid로 둔다.
+CREATE TABLE IF NOT EXISTS session_links (
+    source TEXT NOT NULL,
+    child_uid TEXT NOT NULL,
+    parent_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, child_uid)
+);
+
 -- 삭제한 세션. 원본 파일이 PC에 남아 있어도 다시 수집하지 않는다.
 CREATE TABLE IF NOT EXISTS deleted_sessions (
     machine_id INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,

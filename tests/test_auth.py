@@ -83,6 +83,7 @@ def test_without_password_only_local_requests_allowed(db_path):
     with make_client(db_path, REMOTE) as remote:
         assert remote.get("/api/sessions").status_code == 403
         assert remote.delete("/api/sessions/1").status_code == 403
+        assert remote.post("/api/sessions/1/runs", json={"prompt": "x"}).status_code == 403
         assert remote.get("/api/auth/status").json() == {"password_enabled": False, "authenticated": False}
         assert remote.get("/").status_code == 200  # 화면 셸은 공개
 

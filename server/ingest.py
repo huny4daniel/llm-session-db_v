@@ -152,6 +152,15 @@ def delete_session(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | N
     return session
 
 
+def record_fork(conn: sqlite3.Connection, parent_session_id: int, child_uid: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO session_links (source, child_uid, parent_session_id, created_at)"
+            " SELECT source, ?, id, ? FROM sessions WHERE id = ?",
+            (child_uid, utcnow(), parent_session_id),
+        )
+
+
 def rebuild_all(conn: sqlite3.Connection) -> int:
     session_ids = [r["id"] for r in conn.execute("SELECT id FROM sessions")]
     for session_id in session_ids:

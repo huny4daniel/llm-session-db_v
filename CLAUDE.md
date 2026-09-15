@@ -22,7 +22,7 @@
 ## 기술 스택
 
 - Python 3.13
-- 서버: FastAPI, SQLite(FTS5 전문 검색), WebSocket(웹 이어가기 스트리밍)
+- 서버: FastAPI, SQLite(FTS5 전문 검색), SSE(웹 이어가기 스트리밍 — 추가 패키지 없이 재연결·이어받기 지원)
 - 에이전트: Python 스크립트(Windows 백그라운드 실행)
 - 웹 UI: 서버에서 정적 파일로 제공(별도 프론트엔드 빌드 없이 시작)
 
@@ -97,9 +97,24 @@ headless (`-p`)
 - 체크포인트(file-history) 이동은 후순위 확장 기능.
 
 ### B. 웹에서 바로 이어가기
-- 서버 PC에서 `claude -p --resume <sessionId> --output-format stream-json` 형태로 CLI를 headless 실행하고 WebSocket으로 스트리밍한다.
-- 서버 PC에 해당 프로젝트 경로가 있으면 그 폴더에서 실행, 없으면 대화 전용 모드로 표시한다.
-- 서버 PC에서 명령 실행 권한을 웹에 여는 기능이므로 인증 없이 절대 동작하지 않게 한다.
+구현: `server/runner.py`(실행 관리), `app.py`의 `/api/sessions/{id}/runs`·`/api/runs/*`, 웹 UI 세션 화면 하단 "이어서 대화하기".
+
+- 실행 명령: `claude -p --resume <uid> --output-format stream-json --verbose --include-partial-messages --permission-mode default`. 프롬프트는 표준 입력으로 넘긴다(한국어·긴 입력 안전).
+- **이어갈 대상**
+  - 서버 PC `~/.claude/projects/*/<uid>.jsonl`이 있으면 그 세션에 그대로 이어간다.
+  - 없으면(다른 PC 세션) 수집된 메인 파일 원본으로 `~/.claude/projects/llm-session-db-import/<uid>.jsonl` 사본을 만들고 `--fork-session`으로 새 세션을 만든다. 사본은 실행이 끝나면 지운다. 에이전트는 이 폴더를 수집하지 않는다(`agent/collector.py`의 `IMPORT_FOLDER`).
+  - fork로 생긴 새 세션은 `session_links`에 부모를 기록한다(새 세션이 수집되기 전이어도 uid로 연결).
+- **실행 위치·도구**
+  - 세션의 프로젝트 폴더가 서버 PC에 있으면 그 폴더에서 실행한다. 읽기 도구는 기본 허용, 웹에서 고른 묶음(파일 수정 `edit` / 명령 실행 `shell` / 웹 `web`)만 `--allowedTools`로 추가 허용.
+  - 폴더가 없으면 `data/workspaces/<uid>`에서 `--tools ""`(도구 없음)로 대화만 한다.
+  - 거부된 도구는 `result.permission_denials`로 보여주고 "허용하고 계속" 시 해당 묶음을 켜고 이어서 요청한다.
+- **프로세스**
+  - 세션당 1개, 전체 동시 2개. 중단은 프로세스 트리 강제 종료(스트리밍 중이던 응답은 저장되지 않음).
+  - 서버가 Claude Code 세션 안에서 시작되면 물려받는 `CLAUDECODE`·`CLAUDE_CODE_SESSION_ID`·메시징 소켓 등의 변수를 자식 CLI에 넘기지 않는다.
+  - Windows에서 창이 뜨지 않게 `CREATE_NO_WINDOW`로 실행한다. `claude` 경로는 PATH에서 찾고 `LSDB_CLAUDE_BIN`으로 지정할 수 있다.
+- **이벤트**: stream-json을 `init`·`message_start`·`block_start`·`delta`·`assistant`·`user`·`result`·`run_status`로 줄여 메모리에 보관(완료 후 30분). SSE는 `Last-Event-ID`로 끊긴 지점부터 다시 보낸다. 서버를 재시작하면 실행 기록은 사라진다.
+- 실행 결과는 CLI가 세션 파일에 쓰고 에이전트가 수집해 기록에 반영된다(웹은 수집될 때까지 확인해 새로고침·새 세션 링크를 띄움).
+- 서버 PC에서 명령 실행 권한을 웹에 여는 기능이므로 조회 API와 같은 인증(비밀번호 또는 로컬 접속)을 거친다.
 
 ### 분기(fork) 관리
 - 같은 세션을 여러 곳에서 이어가면 기록이 갈라진다. 원본 세션을 덮어쓰지 않고 부모-자식 관계(`parent_session_id`)로 저장한다.
@@ -122,7 +137,7 @@ headless (`-p`)
 1. **서버 코어** (v0.0.1 완료): DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
    - 미완: 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 검증 (4단계 전에 실행)
 2. **원격 접속**: 웹 UI 비밀번호 로그인, 에이전트·서버 백그라운드 자동 실행(로그 파일·중복 실행 방지), `agent status`, Tailscale 연결 안내
-3. **웹 이어가기(B)**: headless CLI 실행 + WebSocket 스트리밍
+3. **웹 이어가기(B)**: headless CLI 실행 + SSE 스트리밍, 도구 허용 묶음, 중단, fork 부모 연결
 4. **로컬 가져오기(A)**: 경로 대응표, cwd 치환, fork 연결
 5. **Codex 지원**: 실제 샘플 기반 파서 작성
 
@@ -130,7 +145,8 @@ headless (`-p`)
 
 - 코드 주석·UI 문구·커밋 메시지는 한국어.
 - 커밋 규칙은 전역 CLAUDE.md를 따른다.
-- 실제 `~/.claude`, `~/.codex` 파일은 **읽기 전용**으로만 다룬다. 테스트에서 쓰기가 필요하면 임시 디렉터리에 복사해 사용한다(A 방식의 실제 복원 기능 제외).
+- 실제 `~/.claude`, `~/.codex` 파일은 **읽기 전용**으로만 다룬다. 테스트에서 쓰기가 필요하면 임시 디렉터리에 복사해 사용한다. 예외: 웹 이어가기의 가져오기 사본(`llm-session-db-import` 폴더)과 A 방식의 실제 복원 기능.
+- 실제 CLI를 실행하는 테스트는 만들지 않는다. `tests/fake_claude.py`(stream-json 흉내)로 대체한다.
 - Codex의 SQLite는 CLI가 사용 중일 수 있으므로 복사본 또는 읽기 전용 연결로 접근한다.
 - 파서 테스트용 샘플은 민감정보를 제거한 축약본만 저장소에 둔다.
 
@@ -145,6 +161,7 @@ headless (`-p`)
 | `server/app.py` | FastAPI 앱(에이전트 API `/api/agent/*`, 조회 API, 정적 UI) |
 | `server/static/` | 웹 UI(프레임워크 없는 단일 페이지, 해시 라우팅) |
 | `server/auth.py` | 웹 UI 비밀번호·로그인 쿠키·로컬 요청 판별·로그인 시도 제한 |
+| `server/runner.py` | 웹 이어가기: 이어갈 방식 결정, CLI 실행·이벤트 변환·중단, fork 부모 기록 |
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
 | `agent/autostart.py` | HKCU Run 키 자동 실행 등록(서버 CLI도 공유). Run 키는 작업 디렉터리를 못 정하므로 `-c`로 프로젝트 경로를 넣어 실행 |
 | `agent/lock.py` | 잠금 파일로 에이전트 중복 실행 방지 |

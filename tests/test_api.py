@@ -1,7 +1,15 @@
-import pytest
+import json
+import sys
+from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
+from server import db, machines, runner
+from server.app import create_app
 from tests import samples
 from tests.conftest import end_offset, to_lines
+from tests.fake_claude import FORK_ID
 
 
 def payload(file_key, texts, start=0, **extra):
@@ -16,6 +24,12 @@ def payload(file_key, texts, start=0, **extra):
 
 def auth(token):
     return {"Authorization": f"Bearer {token}"}
+
+
+def sse_events(stream):
+    """SSE 응답의 데이터 이벤트. 스트림 종료를 알리는 `event: end`의 빈 데이터는 뺀다."""
+    events = [json.loads(line[len("data: "):]) for line in stream.iter_lines() if line.startswith("data: ")]
+    return [e for e in events if e]
 
 
 @pytest.fixture
@@ -144,6 +158,56 @@ def test_delete_session(loaded):
     more = payload(samples.MAIN_KEY, ["{}"], start=end_offset(to_lines(samples.main_lines())))
     assert client.post("/api/agent/ingest", json=more, headers=auth(token)).status_code == 200
     assert client.get("/api/sessions").json()["total"] == 0
+
+
+def test_web_run_streams_events_and_links_fork(db_path, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    fake = Path(__file__).with_name("fake_claude.py")
+    manager = runner.RunManager(lambda: [sys.executable, str(fake)], projects, tmp_path / "ws")
+    conn = db.connect(db_path)
+    token = machines.create_machine(conn, "remote-pc")
+    conn.close()
+
+    with TestClient(create_app(db_path, runs=manager), client=("127.0.0.1", 50000)) as client:
+        for key, texts in [(samples.MAIN_KEY, samples.main_lines()), (samples.SUB_KEY, samples.subagent_lines())]:
+            assert client.post("/api/agent/ingest", json=payload(key, texts), headers=auth(token)).status_code == 200
+        session_id = client.get("/api/sessions").json()["items"][0]["id"]
+
+        detail = client.get(f"/api/sessions/{session_id}").json()
+        assert detail["continue_plan"]["fork"] is True  # 서버 PC에 세션 파일 없음
+        assert detail["continue_plan"]["chat_only"] is True  # 프로젝트 폴더 없음
+        assert detail["latest_run"] is None and detail["parent"] is None and detail["children"] == []
+
+        assert client.post(f"/api/sessions/{session_id}/runs", json={"prompt": "x", "allowed_tools": ["root"]}).status_code == 400
+        assert client.post("/api/sessions/9999/runs", json={"prompt": "x"}).status_code == 404
+
+        started = client.post(f"/api/sessions/{session_id}/runs", json={"prompt": "웹에서 안녕"})
+        assert started.status_code == 200, started.text
+        run_id = started.json()["id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/events") as stream:
+            events = sse_events(stream)
+        assert events[0]["type"] == "init"
+        assert "".join(e["text"] for e in events if e["type"] == "delta") == "에코: 웹에서 안녕"
+        assert events[-1] == {"type": "run_status", "status": "completed", "error": None, "session_uid": FORK_ID}
+
+        # 끊긴 뒤 다시 연결하면 마지막으로 받은 다음 이벤트부터 받는다.
+        with client.stream("GET", f"/api/runs/{run_id}/events", headers={"Last-Event-ID": str(len(events) - 2)}) as stream:
+            replay = sse_events(stream)
+        assert replay == events[-1:]
+
+        assert client.get(f"/api/runs/{run_id}").json()["status"] == "completed"
+        detail = client.get(f"/api/sessions/{session_id}").json()
+        assert detail["latest_run"]["id"] == run_id
+        assert [c["child_uid"] for c in detail["children"]] == [FORK_ID]
+        assert detail["children"][0]["id"] is None  # 새 세션은 아직 수집 전
+
+        assert client.get("/api/session-lookup", params={"uid": FORK_ID}).json() == {"id": None}
+        assert client.get("/api/session-lookup", params={"uid": samples.SESSION}).json() == {"id": session_id}
+        assert client.post("/api/runs/unknown/cancel").status_code == 404
+        assert client.get("/api/runs/unknown/events").status_code == 404
 
 
 def test_index_served(api):

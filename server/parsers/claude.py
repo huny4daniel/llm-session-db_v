@@ -320,3 +320,6 @@ def _truncate_json(value):
     if isinstance(value, dict):
         return {k: _truncate_json(v) for k, v in value.items()}
     return value
+
+
+truncate_json = _truncate_json
