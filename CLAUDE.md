@@ -55,10 +55,36 @@
 1. **원본 보존**: 모든 이벤트의 원본 JSON 줄을 그대로 저장한다. 정규화 테이블은 원본에서 언제든 재생성 가능해야 한다(파서 수정 후 재파싱).
 2. **소스별 파서 분리**: `claude`, `codex` 파서를 독립 모듈로 두고 공통 모델로 변환한다. 알 수 없는 이벤트 타입은 버리지 말고 원본으로만 보관.
 3. **증분 수집**: 파일별 byte offset + mtime + 크기를 기록해 추가된 줄만 전송. 진행 중 세션의 마지막 불완전한 줄(개행 없음)은 다음 수집으로 미룬다.
-4. **멱등 업로드**: 동일 이벤트 재전송 시 중복 저장되지 않게 (machine_id, source, session_id, 줄 offset 또는 uuid) 기준으로 upsert.
+4. **멱등 업로드**: 원본 줄은 (machine_id, source, file_key, byte_offset)로 한 번만 저장하고, 메시지는 세션 내 `uuid`로 한 번만 만든다.
+6. **삭제는 표시로 막는다**: 세션 삭제 시 원본 줄·파생 데이터를 지우고 `deleted_sessions`에 남긴다. 수신 위치는 유지해 에이전트가 되살리지 않게 하고, 이후 들어오는 줄은 저장 없이 위치만 옮긴다.
 5. **대기열 없는 재전송**: 에이전트는 서버에 기록된 파일별 수신 위치(`source_files.next_offset`)부터 보낸다. 서버가 꺼져 있어도 원본 JSONL 자체가 대기열 역할을 하므로 별도 로컬 대기열을 두지 않는다(예외: 오프라인인 동안 CLI가 오래된 세션 파일을 정리하면 그 부분은 유실).
 
 ## 세션 이어가기
+
+### 검증된 CLI 동작 (Claude Code 2.1.272, 2026-09-15 실험)
+
+resume
+- `claude --resume <ID>`(대화형·`-p` 모두)는 현재 폴더와 무관하게 `~/.claude/projects/*/<ID>.jsonl`을 **ID로 찾는다**. 폴더 이름이 실제 경로와 달라도(존재하지 않는 경로 slug) 찾는다.
+- 새 대화는 **찾은 파일에 그대로 이어 쓴다**. 새 줄의 `cwd`만 실제 실행 폴더로 기록된다. 도구(Bash 등)도 실행 폴더 기준으로 동작한다.
+- 같은 ID 파일이 여러 폴더에 있으면 **현재 폴더 slug의 파일**에 이어 쓴다.
+- 파일 안의 `cwd`를 치환하지 않아도 이어가기가 된다.
+
+fork (`--resume <ID> --fork-session`)
+- 새 세션 ID로 **현재 폴더 slug에 새 파일**을 만들고 기존 기록 전체를 복사한다(모든 `sessionId`가 새 ID, `cwd`도 현재 폴더로 바뀜). 원본 파일은 변경되지 않는다.
+- fork 파일에는 원본 세션 ID가 남지 않는다. 복사된 메시지의 `uuid` 일부가 원본과 같으므로 **uuid 겹침으로 부모 세션을 추정**해야 한다.
+
+headless (`-p`)
+- `-p` 실행도 resume 가능한 세션으로 저장된다(`--no-session-persistence`로 끌 수 있음). 사용자 전역 CLAUDE.md·설정이 적용된다.
+- `--output-format stream-json`은 `--verbose`가 필수(없으면 오류 종료).
+- 이벤트: `system/init`(session_id·cwd·model·tools·permissionMode 등) → `assistant`(콘텐츠 블록 단위) / `user`(tool_result) → `result`(result·session_id·total_cost_usd·usage·permission_denials). resume해도 session_id는 그대로. 그 외 `system/thinking_tokens`, `system/status`, `rate_limit_event`.
+- `--include-partial-messages`를 붙이면 `stream_event`(message_start, content_block_start/delta/stop, message_delta/stop)로 글자 조각이 온다.
+- 승인이 필요한 도구는 **대기하지 않고 즉시 거부**된다: `system/permission_denied` 이벤트, `tool_result`(is_error), `result.permission_denials`(tool_name·tool_use_id·tool_input)가 남고 프로세스는 정상 종료. 사용자 설정이 auto 모드여도 `-p`의 init은 default였다. `--allowedTools`로 허용하면 실행된다.
+- 응답 스트리밍 도중 프로세스를 강제 종료하면 **스트리밍된 부분 응답은 세션 파일에 저장되지 않는다**(사용자 메시지만 남음). 파일은 깨지지 않고 이후 resume도 정상.
+
+설계 반영
+- A: 가져온 세션은 현재 폴더 slug에 두면 된다(ID 검색·중복 시 우선순위 모두 충족). 이어간 기록이 원본 파일에 쌓이는 문제를 피하려면 `--fork-session`을 기본으로 한다.
+- B: 부분 응답은 UI에만 표시하고 중단 시 유실됨을 안내한다. 도구 승인은 `permission_denials`를 보여주고 허용 도구를 붙여 재실행하는 방식이 가장 단순하다(인라인 승인은 `--permission-prompt-tool` 필요).
+- 수집: 같은 ID 파일이 여러 폴더에 있으면 한 세션(machine·source·session_uid)으로 합쳐지므로 세션 내 메시지 `uuid` 기준으로 중복을 거르고, 대화 뷰는 시간순으로 정렬한다(적용됨).
 
 ### A. 로컬로 가져와서 이어가기
 1. 에이전트가 서버에서 세션 원본을 내려받는다.

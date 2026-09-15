@@ -1,6 +1,6 @@
 import pytest
 
-from server import ingest
+from server import ingest, queries
 from tests import samples
 from tests.conftest import end_offset, to_lines
 
@@ -88,6 +88,50 @@ def test_reset_rebuilds_from_remaining_lines(conn, machine_id):
     assert s["output_tokens"] == 0
     assert conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM api_usage").fetchone()[0] == 0
+
+
+MAIN_KINDS = ["command", "user", "assistant", "assistant", "assistant", "tool_result",
+              "assistant", "assistant", "system", "interrupted", "user"]
+
+
+def test_same_session_in_two_folders_is_deduplicated(conn, machine_id):
+    """가져온 세션을 다른 폴더에서 이어가면 앞부분이 겹치는 파일이 두 개 생긴다."""
+    texts = samples.main_lines()
+    copy_key = f"C--elsewhere/{samples.SESSION}.jsonl"
+    ingest_all(conn, machine_id, samples.MAIN_KEY, texts[:9])
+    ingest_all(conn, machine_id, copy_key, texts)
+
+    s = session_row(conn)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 12
+    assert s["user_turns"] == 2
+    assert (s["input_tokens"], s["output_tokens"], s["cache_read_tokens"]) == (12, 100, 3000)
+    assert [m["kind"] for m in queries.session_messages(conn, s["id"])] == MAIN_KINDS
+
+    ingest.rebuild_all(conn)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 12
+    assert [m["kind"] for m in queries.session_messages(conn, s["id"])] == MAIN_KINDS
+
+
+def test_deleted_session_is_not_recreated(conn, machine_id):
+    texts = samples.main_lines()
+    first = to_lines(texts[:5])
+    ingest_all(conn, machine_id, samples.MAIN_KEY, texts[:5])
+    ingest_all(conn, machine_id, samples.SUB_KEY, samples.subagent_lines())
+    session_id = session_row(conn)["id"]
+
+    assert ingest.delete_session(conn, session_id) is not None
+    assert session_row(conn) is None
+    for table in ("raw_events", "messages", "api_usage"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    fts_hits = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH '\"trigram\"'").fetchone()[0]
+    assert fts_hits == 0
+
+    # 에이전트가 같은 파일의 뒷부분을 보내도 저장하지 않고 수신 위치만 옮긴다.
+    next_offset = ingest_all(conn, machine_id, samples.MAIN_KEY, texts[5:], start=end_offset(first))
+    assert next_offset == end_offset(to_lines(texts))
+    assert session_row(conn) is None
+    assert conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == 0
+    assert ingest.delete_session(conn, session_id) is None
 
 
 def test_rebuild_all_is_idempotent(conn, machine_id):

@@ -134,6 +134,18 @@ def test_stats(loaded):
     assert data["by_machine"][0]["name"] == "api-pc"
 
 
+def test_delete_session(loaded):
+    client, token, session_id = loaded
+    assert client.delete(f"/api/sessions/{session_id}").status_code == 200
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+    assert client.get("/api/sessions").json()["total"] == 0
+    assert client.delete(f"/api/sessions/{session_id}").status_code == 404
+
+    more = payload(samples.MAIN_KEY, ["{}"], start=end_offset(to_lines(samples.main_lines())))
+    assert client.post("/api/agent/ingest", json=more, headers=auth(token)).status_code == 200
+    assert client.get("/api/sessions").json()["total"] == 0
+
+
 def test_index_served(api):
     client, _ = api
     r = client.get("/")

@@ -119,7 +119,8 @@ def session_messages(
         SELECT m.id, m.kind, m.uuid, m.parent_uuid, m.timestamp, m.model, m.api_message_id, r.line
         FROM messages m JOIN raw_events r ON r.id = m.raw_event_id
         WHERE m.session_id = ? AND m.agent_id IS ? {kind_filter}
-        ORDER BY r.byte_offset
+        -- 한 세션이 여러 파일(복사본)에서 올 수 있어 파일 위치보다 시간을 우선한다.
+        ORDER BY m.timestamp, r.file_key, r.byte_offset
         """,
         (session_id, agent_id),
     )

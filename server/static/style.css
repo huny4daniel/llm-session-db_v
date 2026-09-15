@@ -134,6 +134,9 @@ button, input { font: inherit; color: inherit; }
 .session-page { max-width: 920px; margin: 0 auto; }
 .session-header { padding: 20px 24px; margin-bottom: 20px; }
 .back { font-size: 13px; }
+.session-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.btn.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, var(--border)); }
+.btn.danger:hover { background: color-mix(in srgb, var(--error) 10%, transparent); }
 .session-heading { margin: 8px 0 16px; font-size: 20px; line-height: 1.4; overflow-wrap: anywhere; }
 .agent-banner {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;

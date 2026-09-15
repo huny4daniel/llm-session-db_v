@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_session ON messages (session_id, agent_id);
 CREATE INDEX IF NOT EXISTS messages_raw ON messages (raw_event_id);
+-- 같은 세션 파일이 여러 프로젝트 폴더에 있을 때(가져오기·복사) 메시지 중복 판별용
+CREATE INDEX IF NOT EXISTS messages_uuid ON messages (session_id, uuid);
+
+-- 삭제한 세션. 원본 파일이 PC에 남아 있어도 다시 수집하지 않는다.
+CREATE TABLE IF NOT EXISTS deleted_sessions (
+    machine_id INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    session_uid TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    PRIMARY KEY (machine_id, source, session_uid)
+);
 
 -- 한 응답이 여러 줄로 나뉘어 usage가 반복 기록되므로 API 메시지 ID 단위로 한 번만 센다.
 CREATE TABLE IF NOT EXISTS api_usage (

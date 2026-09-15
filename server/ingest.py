@@ -64,6 +64,11 @@ def ingest_batch(
                 "DELETE FROM raw_events WHERE machine_id = ? AND source = ? AND file_key = ?",
                 (machine_id, source, file_key),
             )
+        if _is_deleted(conn, machine_id, source, ref.session_uid):
+            # 삭제한 세션은 다시 만들지 않고 수신 위치만 앞으로 옮긴다.
+            _upsert_source_file(conn, machine_id, source, file_key, ref, next_offset, size, mtime, now)
+            conn.execute("UPDATE machines SET last_seen_at = ? WHERE id = ?", (now, machine_id))
+            return next_offset
         session_id = _get_or_create_session(conn, machine_id, source, ref)
 
         inserted = []
@@ -76,14 +81,7 @@ def ingest_batch(
             if cur.rowcount:
                 inserted.append((cur.lastrowid, line.text))
 
-        conn.execute(
-            "INSERT INTO source_files (machine_id, source, file_key, session_uid, next_offset, size, mtime, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT (machine_id, source, file_key) DO UPDATE SET"
-            " next_offset = excluded.next_offset, size = excluded.size,"
-            " mtime = excluded.mtime, updated_at = excluded.updated_at",
-            (machine_id, source, file_key, ref.session_uid, next_offset, size, mtime, now),
-        )
+        _upsert_source_file(conn, machine_id, source, file_key, ref, next_offset, size, mtime, now)
 
         if reset:
             rebuild_session(conn, session_id)
@@ -128,6 +126,32 @@ def rebuild_session(conn: sqlite3.Connection, session_id: int) -> None:
     refresh_session_stats(conn, session_id)
 
 
+def delete_session(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | None:
+    """세션과 원본 줄을 지우고 삭제 표시를 남긴다. PC의 원본 파일은 건드리지 않는다.
+
+    수신 위치(source_files)는 남겨 에이전트가 같은 파일을 처음부터 다시 보내지 않게 한다.
+    """
+    with conn:
+        session = conn.execute(
+            "SELECT id, machine_id, source, session_uid FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if session is None:
+            return None
+        key = (session["machine_id"], session["source"], session["session_uid"])
+        conn.execute(
+            "INSERT OR REPLACE INTO deleted_sessions (machine_id, source, session_uid, deleted_at) VALUES (?, ?, ?, ?)",
+            (*key, utcnow()),
+        )
+        conn.execute(
+            "DELETE FROM raw_events WHERE (machine_id, source, file_key) IN"
+            " (SELECT machine_id, source, file_key FROM source_files"
+            "  WHERE machine_id = ? AND source = ? AND session_uid = ?)",
+            key,
+        )
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    return session
+
+
 def rebuild_all(conn: sqlite3.Connection) -> int:
     session_ids = [r["id"] for r in conn.execute("SELECT id FROM sessions")]
     for session_id in session_ids:
@@ -165,7 +189,7 @@ def _apply_lines(conn, parser, session_id: int, ref, rows: Iterable[tuple[int, s
     for raw_event_id, text in rows:
         parsed = parser.parse_line(text, ref)
         message = parsed.message
-        if message is not None:
+        if message is not None and not _message_exists(conn, session_id, message.uuid):
             conn.execute(
                 "INSERT INTO messages (session_id, raw_event_id, agent_id, uuid, parent_uuid, kind,"
                 " timestamp, model, api_message_id, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -204,6 +228,33 @@ def _apply_lines(conn, parser, session_id: int, ref, rows: Iterable[tuple[int, s
         if column not in parser.META_LAST_COLUMNS:
             raise IngestError(f"허용되지 않은 세션 컬럼입니다: {column}")
         conn.execute(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
+
+
+def _message_exists(conn, session_id: int, uuid: str | None) -> bool:
+    """같은 세션 파일이 여러 폴더에 있으면(가져오기·복사) 같은 메시지가 여러 번 들어오므로 uuid로 거른다."""
+    if uuid is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM messages WHERE session_id = ? AND uuid = ? LIMIT 1", (session_id, uuid)
+    ).fetchone() is not None
+
+
+def _is_deleted(conn, machine_id: int, source: str, session_uid: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM deleted_sessions WHERE machine_id = ? AND source = ? AND session_uid = ?",
+        (machine_id, source, session_uid),
+    ).fetchone() is not None
+
+
+def _upsert_source_file(conn, machine_id, source, file_key, ref, next_offset, size, mtime, now) -> None:
+    conn.execute(
+        "INSERT INTO source_files (machine_id, source, file_key, session_uid, next_offset, size, mtime, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT (machine_id, source, file_key) DO UPDATE SET"
+        " next_offset = excluded.next_offset, size = excluded.size,"
+        " mtime = excluded.mtime, updated_at = excluded.updated_at",
+        (machine_id, source, file_key, ref.session_uid, next_offset, size, mtime, now),
+    )
 
 
 def _get_or_create_session(conn, machine_id: int, source: str, ref) -> int:

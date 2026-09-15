@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     rotate = sub.add_parser("rotate-token", help="PC 토큰 재발급")
     rotate.add_argument("name")
     sub.add_parser("machines", help="등록된 PC 목록")
+    delete = sub.add_parser("delete-session", help="세션 삭제(원본 파일은 PC에 남고 다시 수집되지 않음)")
+    delete.add_argument("ids", nargs="+", help="세션 번호(웹 주소 #/session/<번호>) 또는 세션 ID(앞부분만도 가능)")
     sub.add_parser("rebuild", help="원본 이벤트로 파생 데이터 전체 재생성")
 
     args = parser.parse_args(argv)
@@ -72,9 +74,33 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "machines":
             for m in machines.list_machines(conn):
                 print(f"{m['id']:>3}  {m['name']:<20} 세션 {m['session_count']:>5}  마지막 수신 {m['last_seen_at'] or '-'}")
+        elif args.command == "delete-session":
+            return _delete_sessions(conn, args.ids)
         elif args.command == "rebuild":
             print(f"세션 {ingest.rebuild_all(conn)}개 재생성 완료")
     return 0
+
+
+def _delete_sessions(conn: sqlite3.Connection, ids: list[str]) -> int:
+    failed = False
+    for value in ids:
+        if value.isdigit():
+            rows = conn.execute("SELECT id FROM sessions WHERE id = ?", (int(value),)).fetchall()
+        else:
+            rows = conn.execute("SELECT id FROM sessions WHERE session_uid LIKE ?", (f"{value}%",)).fetchall()
+        if len(rows) != 1:
+            print(f"{'찾을 수 없음' if not rows else '여러 세션과 일치'}: {value}", file=sys.stderr)
+            failed = True
+            continue
+        session = conn.execute(
+            "SELECT s.id, s.session_uid, s.project_path, m.name AS machine,"
+            " COALESCE(s.ai_title, s.first_prompt, s.session_uid) AS title"
+            " FROM sessions s JOIN machines m ON m.id = s.machine_id WHERE s.id = ?",
+            (rows[0]["id"],),
+        ).fetchone()
+        ingest.delete_session(conn, session["id"])
+        print(f"삭제: #{session['id']} {session['session_uid'][:8]} [{session['machine']}] {session['project_path']} — {session['title'][:50]}")
+    return 1 if failed else 0
 
 
 def _add_bind_args(parser: argparse.ArgumentParser) -> None:

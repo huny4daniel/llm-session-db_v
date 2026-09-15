@@ -179,6 +179,12 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
         return session
 
+    @viewer.delete("/sessions/{session_id}")
+    def remove_session(conn: Conn, session_id: int):
+        if ingest.delete_session(conn, session_id) is None:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+        return {"ok": True}
+
     @viewer.get("/sessions/{session_id}/messages")
     def get_session_messages(conn: Conn, session_id: int, agent_id: str | None = None, include_meta: bool = False):
         messages = queries.session_messages(conn, session_id, agent_id=agent_id, include_meta=include_meta)
