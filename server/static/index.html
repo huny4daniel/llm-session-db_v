@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-session-db</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">llm-session-db</a>
+  <nav class="nav" aria-label="주요 메뉴">
+    <a href="#/" data-nav="sessions">세션</a>
+    <a href="#/search" data-nav="search">검색</a>
+    <a href="#/stats" data-nav="stats">통계</a>
+  </nav>
+  <form class="global-search" id="global-search" role="search">
+    <input class="input" type="search" name="q" placeholder="대화 내용 검색" aria-label="대화 내용 검색">
+  </form>
+</header>
+<main id="view" class="view"></main>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

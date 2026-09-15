@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# 서버 데이터(DB에 세션 원문·토큰 해시가 들어 있음)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 로컬 설정
+agent.json
+.env

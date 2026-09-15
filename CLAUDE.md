@@ -1,0 +1,141 @@
+# llm-session-db
+
+여러 PC에서 사용한 Claude Code / Codex 세션을 집 PC 서버에 모아 저장·정리하고, 웹에서 열람·검색하며, 원하는 위치에서 세션을 가져와 대화를 이어갈 수 있게 하는 개인용 세션 서버.
+
+## 배경과 목표
+
+- Claude Code는 세션을 **실행한 폴더 경로에 종속**해 저장한다(`~/.claude/projects/<경로 slug>/<sessionId>.jsonl`). 다른 폴더·다른 PC에서는 해당 세션을 resume할 수 없다.
+- 이 프로젝트는 세션을 서버에 보관해 위치 종속을 끊는다. 어느 PC·폴더에서든 서버의 세션을 가져와 이어갈 수 있게 한다.
+- 사용자는 1명. 멀티유저·권한 분리는 범위 밖.
+
+## 전체 구성
+
+| 구성요소 | 위치 | 역할 |
+|---|---|---|
+| 서버 | 집 PC (Windows, 현재 개발 PC) | 세션 수신·저장, 검색 인덱스, 통계, 웹 UI, 웹 이어가기(B) 실행 |
+| 수집 에이전트 | 모든 클라이언트 PC (서버 PC 포함) | 세션 파일 증분 업로드, 세션 가져오기·resume 실행(A) |
+| 웹 UI | 서버가 직접 제공 | 세션 목록·대화 뷰·검색·통계·웹 채팅 |
+
+- 서버 PC의 세션도 원격 PC와 **같은 에이전트 경로**로 수집한다(수집 로직 단일화).
+- 원격 접속은 Tailscale 사설망 + 토큰 인증. 서버를 공인 인터넷에 직접 노출하지 않는다.
+
+## 기술 스택
+
+- Python 3.13
+- 서버: FastAPI, SQLite(FTS5 전문 검색), WebSocket(웹 이어가기 스트리밍)
+- 에이전트: Python 스크립트(Windows 백그라운드 실행)
+- 웹 UI: 서버에서 정적 파일로 제공(별도 프론트엔드 빌드 없이 시작)
+
+## 데이터 소스
+
+### Claude Code
+- 경로: `~/.claude/projects/<slug>/<sessionId>.jsonl`
+- 서브에이전트: `~/.claude/projects/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl` (줄의 `sessionId`는 부모 세션, `agentId`·`isSidechain: true`, 첫 줄 `fork-context-ref`에는 `sessionId` 없음 → 세션 식별은 파일 경로 기준)
+- 같은 폴더의 `tool-results/*.txt`, `subagents/*.json`, 프로젝트 폴더의 `memory/`는 세션 JSONL이 아니므로 수집하지 않는다.
+- slug 규칙: cwd 절대경로에서 영숫자가 아닌 문자(한글 포함)를 모두 `-`로 치환
+  - 예: `C:\Users\USER\Desktop\Project\llm-session-db_v` → `C--Users-USER-Desktop-Project-llm-session-db-v`
+- 한 줄 = 이벤트 1개. `type`으로 구분(`user`, `assistant`, `file-history-snapshot`, `mode`, `permission-mode` 등)
+- 공통 필드: `sessionId`, `uuid`, `parentUuid`, `timestamp`, `cwd`, `gitBranch`, `version`, `isSidechain`
+- `assistant` 이벤트의 `message.model`, `message.usage`(input/output/cache_creation/cache_read/thinking 토큰)로 사용량 집계
+  - 한 API 응답이 콘텐츠 블록마다 별도 줄로 기록되고 줄마다 누적 `usage`가 반복된다 → `message.id` 단위로 최댓값만 센다.
+  - `model: "<synthetic>"`은 CLI가 만든 오류 메시지라 사용량에서 제외한다.
+- 세션 메타: `ai-title`(제목, 마지막 값), `last-prompt`, `cost-state`(누적 `totalCostUSD`, 마지막 값)
+- `user` 이벤트 분류: `isMeta` → meta, `isCompactSummary` → 압축 요약, 전부 `tool_result` 블록 → 도구 결과, `[Request interrupted…` → 중단, `<command-name>`·`<task-notification>` 등 CLI 태그 → command, 그 외가 실제 사용자 질문
+- 파일 체크포인트 백업은 `~/.claude/file-history`에 별도 저장
+
+### Codex CLI
+- 세션 메타: `~/.codex/state_5.sqlite`의 `threads` 테이블(`id`, `rollout_path`, `cwd`, `title`, `model_provider`, `created_at`, `updated_at`)
+- 대화 본문: `rollout_path`가 가리키는 JSONL(`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`)
+- 현재 개발 PC에는 Codex 세션 데이터가 없으므로 실제 샘플 확보 후 파서를 작성한다.
+
+> 두 도구 모두 세션 파일 형식이 공식 문서화되어 있지 않아 버전 업데이트로 바뀔 수 있다.
+
+## 핵심 설계 원칙
+
+1. **원본 보존**: 모든 이벤트의 원본 JSON 줄을 그대로 저장한다. 정규화 테이블은 원본에서 언제든 재생성 가능해야 한다(파서 수정 후 재파싱).
+2. **소스별 파서 분리**: `claude`, `codex` 파서를 독립 모듈로 두고 공통 모델로 변환한다. 알 수 없는 이벤트 타입은 버리지 말고 원본으로만 보관.
+3. **증분 수집**: 파일별 byte offset + mtime + 크기를 기록해 추가된 줄만 전송. 진행 중 세션의 마지막 불완전한 줄(개행 없음)은 다음 수집으로 미룬다.
+4. **멱등 업로드**: 동일 이벤트 재전송 시 중복 저장되지 않게 (machine_id, source, session_id, 줄 offset 또는 uuid) 기준으로 upsert.
+5. **오프라인 대기열**: 서버 연결 실패 시 에이전트가 로컬에 적재 후 재전송.
+
+## 세션 이어가기
+
+### A. 로컬로 가져와서 이어가기
+1. 에이전트가 서버에서 세션 원본을 내려받는다.
+2. 각 이벤트의 `cwd`를 현재 위치로 치환하고, 현재 cwd의 slug 폴더에 저장한다.
+3. `claude --resume <sessionId>` 실행(기본은 `--fork-session`으로 새 세션 ID 발급).
+4. 이어간 세션은 다시 수집되어 원본 세션의 자식(분기)으로 연결된다.
+
+- PC별 프로젝트 경로 대응표(machine_id + 프로젝트 → 로컬 경로)를 서버에서 관리한다.
+- 대화 기억만 이동하며 코드 파일은 이동하지 않는다. 같은 저장소가 있는 위치에서 이어가는 것을 전제로 한다.
+- 체크포인트(file-history) 이동은 후순위 확장 기능.
+
+### B. 웹에서 바로 이어가기
+- 서버 PC에서 `claude -p --resume <sessionId> --output-format stream-json` 형태로 CLI를 headless 실행하고 WebSocket으로 스트리밍한다.
+- 서버 PC에 해당 프로젝트 경로가 있으면 그 폴더에서 실행, 없으면 대화 전용 모드로 표시한다.
+- 서버 PC에서 명령 실행 권한을 웹에 여는 기능이므로 인증 없이 절대 동작하지 않게 한다.
+
+### 분기(fork) 관리
+- 같은 세션을 여러 곳에서 이어가면 기록이 갈라진다. 원본 세션을 덮어쓰지 않고 부모-자식 관계(`parent_session_id`)로 저장한다.
+
+## 보안
+
+- 세션에는 API 키·토큰·`.env` 내용·소스 코드가 포함될 수 있다.
+- 서버는 Tailscale 인터페이스(또는 localhost)에만 바인딩한다.
+- 에이전트 ↔ 서버 통신은 PC별 발급 토큰으로 인증한다.
+- 선택 기능: 저장 시 민감값 패턴 마스킹(원본 보존 원칙과 충돌하므로 설정으로 선택).
+- 토큰·DB 파일·로컬 설정은 저장소에 커밋하지 않는다.
+
+## 개발 단계
+
+1. **서버 코어**: DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
+   - 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 우선 검증
+2. **원격 에이전트**: 토큰 인증, 증분 업로드, 오프라인 대기열, Tailscale 연결
+3. **웹 이어가기(B)**: headless CLI 실행 + WebSocket 스트리밍
+4. **로컬 가져오기(A)**: 경로 대응표, cwd 치환, fork 연결
+5. **Codex 지원**: 실제 샘플 기반 파서 작성
+
+## 개발 규칙
+
+- 코드 주석·UI 문구·커밋 메시지는 한국어.
+- 커밋 규칙은 전역 CLAUDE.md를 따른다.
+- 실제 `~/.claude`, `~/.codex` 파일은 **읽기 전용**으로만 다룬다. 테스트에서 쓰기가 필요하면 임시 디렉터리에 복사해 사용한다(A 방식의 실제 복원 기능 제외).
+- Codex의 SQLite는 CLI가 사용 중일 수 있으므로 복사본 또는 읽기 전용 연결로 접근한다.
+- 파서 테스트용 샘플은 민감정보를 제거한 축약본만 저장소에 둔다.
+
+## 코드 구조
+
+| 경로 | 역할 |
+|---|---|
+| `server/db.py` | SQLite 스키마(원본 `raw_events` → 파생 `sessions`/`messages`/`api_usage`, FTS5 trigram 인덱스) |
+| `server/parsers/claude.py` | Claude Code 줄 파서(세션 메타·메시지 분류·사용량·대화 뷰 블록) |
+| `server/ingest.py` | 증분 수신(offset 검증, 멱등 저장), 세션 통계 갱신, 재생성(`rebuild`) |
+| `server/queries.py` | 세션 목록·상세·검색·통계 조회 |
+| `server/app.py` | FastAPI 앱(에이전트 API `/api/agent/*`, 조회 API, 정적 UI) |
+| `server/static/` | 웹 UI(프레임워크 없는 단일 페이지, 해시 라우팅) |
+| `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
+| `tests/` | pytest. `tests/samples.py`는 실제 구조를 흉내 낸 합성 세션 |
+
+- 파생 테이블 구조나 파서를 바꾸면 `python -m server rebuild`로 원본에서 다시 만든다.
+- FastAPI 요청 처리 중 의존성·엔드포인트가 다른 스레드에서 돌 수 있어 DB 연결은 요청마다 새로 만들고 `check_same_thread=False`로 연다.
+
+## 실행 방법
+
+```powershell
+# 최초 1회
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+
+# 서버 (기본 127.0.0.1:8765, DB는 data/sessions.db — LSDB_DATA_DIR로 변경)
+.venv\Scripts\python -m server add-machine home-pc     # 토큰 발급(한 번만 표시)
+.venv\Scripts\python -m server serve
+
+# 에이전트 (설정: ~/.llm-session-db/agent.json — LSDB_AGENT_CONFIG로 변경)
+.venv\Scripts\python -m agent setup --server http://127.0.0.1:8765 --token <토큰>
+.venv\Scripts\python -m agent run            # 30초 간격 반복, --once는 한 번만
+
+# 테스트
+.venv\Scripts\python -m pytest
+```
+
+- 웹 UI 인증이 아직 없어 `serve`는 루프백 주소로만 뜬다. 사설망에서 열 때만 `--host <Tailscale IP> --allow-remote`.
