@@ -65,7 +65,10 @@ def start_background(interval: float = DEFAULT_INTERVAL) -> bool:
 
 def stop_background(timeout: float = 5.0) -> bool:
     """PID 파일의 프로세스를 종료한다. 종료됐으면(또는 원래 실행 중이 아니었으면) True."""
-    return stop_by_pid(read_pid(), is_running, timeout=timeout)
+    stopped = stop_by_pid(read_pid(), is_running, timeout=timeout)
+    if stopped:
+        clear_pid()  # 강제 종료된 프로세스는 자기 PID 파일을 못 지운다
+    return stopped
 
 
 def stop_by_pid(pid: int | None, still_running, *, timeout: float = 5.0) -> bool:

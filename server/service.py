@@ -78,4 +78,7 @@ def start_background(host: str, port: int) -> bool:
 
 
 def stop_background(host: str, port: int, timeout: float = 5.0) -> bool:
-    return stop_by_pid(read_pid(), lambda: is_running(host, port), timeout=timeout)
+    stopped = stop_by_pid(read_pid(), lambda: is_running(host, port), timeout=timeout)
+    if stopped:
+        clear_pid()  # 강제 종료된 프로세스는 자기 PID 파일을 못 지운다
+    return stopped

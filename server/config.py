@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from agent.claude_cli import claude_command  # noqa: F401  (서버 설정에서도 같은 규칙으로 찾는다)
@@ -9,8 +10,15 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 
+def default_data_dir() -> Path:
+    """배포 exe는 exe 옆의 data/, 저장소 실행은 프로젝트의 data/."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "data"
+    return PROJECT_ROOT / "data"
+
+
 def data_dir() -> Path:
-    return Path(os.environ.get("LSDB_DATA_DIR", PROJECT_ROOT / "data"))
+    return Path(os.environ.get("LSDB_DATA_DIR") or default_data_dir())
 
 
 def db_path() -> Path:

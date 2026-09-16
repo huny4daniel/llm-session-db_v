@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+from pathlib import Path
 
 import pytest
 
@@ -163,3 +164,41 @@ def test_server_panel_registers_machine_and_password(db_path, tk_root, monkeypat
     assert auth.password_enabled(db.connect(db_path))
     assert "설정됨" in panel.password_state.cget("text")
     panel.destroy()
+
+
+def test_launch_args_in_frozen_exe(monkeypatch):
+    from agent import autostart
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\apps\LlmSessionServer.exe")
+    monkeypatch.setattr(autostart.importlib.util, "find_spec", lambda name: object())  # 서버가 함께 들어 있는 exe
+    assert autostart.launch_args("agent", ["run"]) == [r"C:\apps\LlmSessionServer.exe", "agent", "run"]
+    assert autostart.launch_args("server", ["serve"]) == [r"C:\apps\LlmSessionServer.exe", "serve"]
+
+    monkeypatch.setattr(autostart.importlib.util, "find_spec", lambda name: None)  # 에이전트만 있는 exe
+    assert autostart.launch_args("agent", ["run"]) == [r"C:\apps\LlmSessionServer.exe", "run"]
+
+
+def test_server_entry_dispatches_agent_commands(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("server_entry", Path("packaging/server_entry.py"))
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    calls = []
+    monkeypatch.setattr(entry, "agent_main", lambda argv: calls.append(("agent", argv)) or 0)
+    monkeypatch.setattr(entry, "server_main", lambda argv: calls.append(("server", argv)) or 0)
+    entry.main(["agent", "status"])
+    entry.main(["serve", "--port", "1"])
+    entry.main([])
+    assert calls == [("agent", ["status"]), ("server", ["serve", "--port", "1"]), ("server", [])]
+
+
+def test_default_data_dir_next_to_frozen_exe(monkeypatch):
+    from server import config
+
+    monkeypatch.delenv("LSDB_DATA_DIR", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\apps\LlmSessionServer.exe")
+    assert config.data_dir() == Path(r"C:\apps\data")

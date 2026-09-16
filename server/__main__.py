@@ -10,7 +10,7 @@ from . import auth, config, db, ingest, machines, queries, service
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m server", description="LLM 세션 수집 서버 (명령 없이 실행하면 GUI 창을 엽니다)"
+        prog=cli_name(), description="LLM 세션 수집 서버 (명령 없이 실행하면 GUI 창을 엽니다. 에이전트 명령은 `agent` 뒤에)"
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -89,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def cli_name() -> str:
+    return Path(sys.executable).name if getattr(sys, "frozen", False) else "python -m server"
+
+
 def _delete_sessions(conn: sqlite3.Connection, ids: list[str]) -> int:
     failed = False
     for value in ids:
@@ -116,7 +120,7 @@ def _add_bind_args(parser: argparse.ArgumentParser) -> None:
 def _remote_bind_without_password(host: str, conn: sqlite3.Connection) -> bool:
     if host in auth.LOOPBACK_HOSTS or auth.password_enabled(conn):
         return False
-    print("루프백이 아닌 주소로 열려면 먼저 비밀번호를 설정하세요: python -m server set-password", file=sys.stderr)
+    print(f"루프백이 아닌 주소로 열려면 먼저 비밀번호를 설정하세요: {cli_name()} set-password", file=sys.stderr)
     return True
 
 

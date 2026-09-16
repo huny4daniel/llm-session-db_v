@@ -12,12 +12,13 @@
 
 | 구성요소 | 위치 | 역할 |
 |---|---|---|
-| 서버 | 집 PC (Windows, 현재 개발 PC) | 세션 수신·저장, 검색 인덱스, 통계, 웹 UI, 웹 이어가기(B) 실행 |
+| 서버 | 집 PC (Windows, 현재 개발 PC) — 배포 exe `LlmSessionServer`로 실행 | 세션 수신·저장, 검색 인덱스, 통계, 웹 UI, 웹 이어가기(B) 실행 |
 | 수집 에이전트 | 모든 클라이언트 PC (서버 PC 포함) | 세션 파일 증분 업로드, 세션 가져오기·resume 실행(A) |
 | 웹 UI | 서버가 직접 제공 | 세션 목록·대화 뷰·검색·통계·웹 채팅 |
 | 관리 GUI | 모든 PC (`python -m agent`/`server` 또는 exe를 명령 없이 실행) | tkinter 창. 에이전트 설정·상태·자동 실행·가져오기 탭, 서버 패키지가 있는 PC에서는 서버 시작·중지·PC 등록·비밀번호 탭 추가. CLI 명령은 그대로 남겨 자동 실행(`run`)·스크립트에 쓴다 |
 
 - 서버 PC의 세션도 원격 PC와 **같은 에이전트 경로**로 수집한다(수집 로직 단일화).
+- **배포와 개발을 분리한다**(2026-09-16 사용자 결정): 실제 동작은 릴리즈 exe(서버 PC: `LlmSessionServer`, 다른 PC: `LlmSessionAgent`)로만 하고, 프로젝트 폴더·venv는 개발용이다. 실행 중인 서비스가 프로젝트 폴더에 의존하면 안 된다.
 - 원격 접속은 Tailscale 사설망 + 토큰 인증. 서버를 공인 인터넷에 직접 노출하지 않는다.
 
 ## 기술 스택
@@ -148,6 +149,7 @@ headless (`-p`)
 3. **웹 이어가기(B)** (v0.0.4): headless CLI 실행 + SSE 스트리밍, 도구 허용 묶음, 중단, fork 부모 연결
 4. **로컬 가져오기(A)** (v0.0.5): `agent pull`, 가져오기 사본 + fork, uuid 겹침으로 부모 자동 연결
 5. **관리 GUI** (v0.0.6): tkinter 창으로 에이전트 설정·상태·자동 실행·가져오기, 서버 시작·중지·PC 등록·비밀번호. 명령 없이 실행하면 GUI, 기존 CLI 명령 유지. 백그라운드 프로세스는 PID 파일(`agent.pid`, `data/server.pid`)로 중지.
+   - v0.0.7: 서버 배포 exe(`LlmSessionServer`, 서버+에이전트+GUI). 배포는 exe, 프로젝트 폴더는 개발용으로 분리.
 6. **Codex 지원** (보류, 2026-09-15 사용자 결정): Codex를 실제로 쓰게 되면 진행. 개발 PC에 Codex CLI·세션이 없어 실제 샘플 확보(설치·로그인·대화)부터 시작하고, 파서·에이전트 탐색·이어가기(`codex resume` 동작 실험)를 추가한다. DB `source` 컬럼·`PARSERS` 등록 구조는 준비되어 있다.
 
 ## 개발 규칙
@@ -183,6 +185,7 @@ headless (`-p`)
 | `agent/pull.py` | 서버 세션을 이 PC로 가져와 이어가기. 계획(`plan_pull`) → 사본(`prepare_copy`) → 실행(`launch`, GUI는 새 콘솔 창) 단계로 나눠 CLI·GUI가 공유 |
 | `agent/claude_cli.py` | claude 실행 파일 찾기·물려받은 세션 환경 변수 제거(서버 웹 이어가기와 공유) |
 | `packaging/agent_entry.py` | 에이전트 exe(PyInstaller) 진입점 |
+| `packaging/server_entry.py` | 서버 exe 진입점. 첫 인자가 `agent`면 에이전트 CLI, 아니면 서버 CLI. `autostart.command_prefix`가 서버 exe의 에이전트 자동 실행 명령에 `agent`를 붙인다 |
 | `tests/` | pytest. `tests/samples.py`는 실제 구조를 흉내 낸 합성 세션 |
 
 - 파생 테이블 구조나 파서를 바꾸면 `python -m server rebuild`로 원본에서 다시 만든다.
@@ -217,14 +220,17 @@ python -m agent stop            # 백그라운드 에이전트 종료(PID 파일
 .venv\Scripts\python -m pytest
 ```
 
-- 에이전트는 표준 라이브러리만 쓰므로 원격 PC에는 Python과 저장소의 `agent/` 폴더만 있으면 된다.
-- Python이 없는 PC는 GitHub Release의 `LlmSessionAgent_vX.Y.Z.exe`를 쓴다. 더블클릭하면 GUI, 명령은 같다(`LlmSessionAgent_vX.Y.Z.exe setup ...`, `status`, `install`). exe로 `install`하면 exe 자신이 자동 실행에 등록되므로 exe를 옮기지 않을 위치에 둔다.
+- 위는 개발용 실행이다. 실제 설치는 GitHub Release의 exe로 한다.
+  - 서버 PC: `LlmSessionServer_vX.Y.Z.exe`를 고정 폴더에 두고 GUI 서버 탭에서 자동 실행 등록. 에이전트 명령은 `LlmSessionServer_vX.Y.Z.exe agent <명령>`. 데이터는 기본 exe 옆 `data\`(`LSDB_DATA_DIR`로 변경).
+  - 다른 PC: `LlmSessionAgent_vX.Y.Z.exe`(에이전트+GUI). 명령은 같다(`setup ...`, `status`, `install`).
+  - exe로 `install`하면 exe 자신의 경로가 자동 실행에 등록되므로 exe를 옮기지 않을 위치에 두고, 버전을 올릴 때는 멈추고 새 exe로 다시 `install`한다.
+- 에이전트는 표준 라이브러리만 쓰므로 Python이 있는 원격 PC는 저장소의 `agent/` 폴더만으로도 동작한다.
 
 ## 릴리즈
 
-- `v*` 태그 푸시 → `.github/workflows/release.yml`이 에이전트 exe를 빌드해 릴리즈에 첨부하고, 같은 major.minor의 기존 릴리즈를 삭제한다.
-- 진입점은 `packaging/agent_entry.py`. GUI와 CLI를 한 exe로 제공하므로 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생길 때만 창을 숨겨 GUI만 보임). GUI에서 claude 실행은 `CREATE_NEW_CONSOLE`로 새 터미널을 띄운다.
-- 서버는 이 PC에서 저장소 + venv로 실행하므로 exe로 배포하지 않는다.
+- `v*` 태그 푸시 → `.github/workflows/release.yml`이 에이전트 exe와 서버 exe를 빌드해 릴리즈에 첨부하고, 같은 major.minor의 기존 릴리즈를 삭제한다.
+- 진입점은 `packaging/agent_entry.py`(에이전트)와 `packaging/server_entry.py`(서버+에이전트). GUI와 CLI를 한 exe로 제공하므로 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생길 때만 창을 숨겨 GUI만 보임). GUI에서 claude 실행은 `CREATE_NEW_CONSOLE`로 새 터미널을 띄운다.
+- 서버 exe는 `--add-data "server/static;server/static"`으로 웹 UI를 넣고 `--collect-submodules uvicorn`으로 uvicorn이 문자열로 불러오는 모듈을 포함한다. 배포 exe의 기본 데이터 폴더는 exe 옆 `data\`(`server/config.default_data_dir`).
 - 로컬 빌드 확인: `.venv\Scripts\pip install pyinstaller` 후 위 워크플로와 같은 옵션으로 `pyinstaller` 실행(`build/`, `dist/`, `*.spec`은 gitignore).
 - `uninstall`은 등록만 해제한다. 실행 중인 프로세스는 `stop`(또는 GUI 중지)으로 종료한다. PID 파일이 없는 이전 버전 프로세스는 작업 관리자에서 직접 종료한다.
 

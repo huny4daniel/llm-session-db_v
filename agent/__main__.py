@@ -5,7 +5,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import config, service
+from . import autostart, config, service
 from .client import Client, OffsetConflict, ServerError
 from .lock import AlreadyRunning, single_instance
 from .pull import pull_session
@@ -16,8 +16,10 @@ log = logging.getLogger("agent")
 
 
 def cli_name() -> str:
-    """도움말·안내 문구에 쓸 실행 명령. exe로 묶였으면 exe 이름을 쓴다."""
-    return Path(sys.executable).name if getattr(sys, "frozen", False) else "python -m agent"
+    """도움말·안내 문구에 쓸 실행 명령. exe로 묶였으면 exe 이름(서버 exe는 `agent` 접두어 포함)을 쓴다."""
+    if not autostart.frozen():
+        return "python -m agent"
+    return " ".join([Path(sys.executable).name, *autostart.command_prefix("agent")])
 
 
 def main(argv: list[str] | None = None) -> int:

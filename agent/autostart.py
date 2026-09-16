@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -10,14 +11,28 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def server_bundled() -> bool:
+    """서버 패키지까지 들어 있는 배포 exe인지. 이 exe는 에이전트 명령을 `agent` 접두어 뒤에 받는다."""
+    return frozen() and importlib.util.find_spec("server") is not None
+
+
+def command_prefix(package: str) -> list[str]:
+    """exe에서 패키지 명령 앞에 붙는 인자. 서버 exe의 에이전트 명령만 `agent` 접두어가 필요하다."""
+    return ["agent"] if package == "agent" and server_bundled() else []
+
+
 def launch_args(package: str, argv: list[str]) -> list[str]:
     """콘솔 창 없이 `python -m <package> <argv>`와 같은 동작을 하는 명령.
 
     Run 키는 작업 디렉터리를 지정할 수 없어 `-m`을 쓸 수 없으므로 프로젝트 경로를 직접 넣는다.
-    PyInstaller로 묶인 실행 파일이면 자기 자신을 실행한다.
+    PyInstaller로 묶인 실행 파일이면 자기 자신을 실행한다(서버 exe는 에이전트 명령에 `agent` 접두어).
     """
-    if getattr(sys, "frozen", False):
-        return [sys.executable, *argv]
+    if frozen():
+        return [sys.executable, *command_prefix(package), *argv]
     code = (
         f"import sys; sys.path.insert(0, {str(PROJECT_ROOT)!r}); "
         f"from {package}.__main__ import main; sys.exit(main({argv!r}))"

@@ -23,7 +23,7 @@ jobs:
 
       - name: 의존성 설치
         run: |
-          pip install pyinstaller
+          pip install pyinstaller -r requirements.txt
 
       # GUI와 CLI를 한 exe로 제공하므로 --windowed 대신 콘솔 빌드를 쓰고,
       # 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생긴 경우에만 창을 숨긴다(터미널에서 실행하면 출력이 보임).
@@ -36,6 +36,20 @@ jobs:
             --name "LlmSessionAgent_${{ github.ref_name }}" `
             --paths "." `
             "packaging/agent_entry.py"
+
+      # 서버 exe는 서버 + 에이전트 + GUI를 모두 담아 서버 PC에 이 파일 하나만 두면 된다.
+      # 웹 UI 정적 파일을 함께 넣고, uvicorn이 문자열로 불러오는 모듈(loops·protocols 등)을 모두 포함한다.
+      - name: 서버 exe 빌드
+        run: |
+          python -m PyInstaller `
+            --onefile `
+            --console `
+            --hide-console hide-early `
+            --name "LlmSessionServer_${{ github.ref_name }}" `
+            --paths "." `
+            --add-data "server/static;server/static" `
+            --collect-submodules uvicorn `
+            "packaging/server_entry.py"
 
       - name: 같은 부버전 기존 릴리즈 삭제
         env:
@@ -61,4 +75,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: dist/LlmSessionAgent_${{ github.ref_name }}.exe
+          files: |
+            dist/LlmSessionAgent_${{ github.ref_name }}.exe
+            dist/LlmSessionServer_${{ github.ref_name }}.exe

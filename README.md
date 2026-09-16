@@ -40,48 +40,53 @@ flowchart LR
 | `server/` | FastAPI 서버. 원본 줄을 그대로 보관하고 세션·메시지·사용량을 파생 테이블로 정리, 웹 UI 제공 |
 | `agent/` | 표준 라이브러리만 쓰는 수집 에이전트와 tkinter GUI 창. 원격 PC에는 Python 또는 릴리즈의 exe만 있으면 됩니다 |
 
+배포는 [Releases](https://github.com/huny4daniel/llm-session-db_v/releases)의 exe 두 가지로 합니다. 저장소를 내려받아 실행하는 것은 개발용입니다.
+
+| 파일 | 용도 |
+|---|---|
+| `LlmSessionServer_vX.Y.Z.exe` | 서버 PC용. 서버 + 이 PC의 에이전트 + 관리 창이 모두 들어 있어 이 파일 하나만 두면 됩니다 |
+| `LlmSessionAgent_vX.Y.Z.exe` | 다른 PC용. 에이전트 + 관리 창(설정·상태·가져오기) |
+
 ## 요구 사항
 
 - Windows 10/11 (자동 실행 등록은 Windows 전용, 나머지는 Python이 되는 환경이면 동작)
-- Python 3.13 (서버 PC). 에이전트만 쓰는 PC는 Python 없이 릴리즈 exe로도 가능
+- 릴리즈 exe를 쓰면 Python이 필요 없습니다. 저장소에서 직접 실행(개발)할 때만 Python 3.13
 - Claude Code CLI — 수집 대상이며, 웹 이어가기·가져오기에 사용
 
 ## 설치
 
 ### 1. 서버 (집 PC)
 
-```powershell
-git clone https://github.com/huny4daniel/llm-session-db_v.git
-cd llm-session-db_v
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+`LlmSessionServer_vX.Y.Z.exe`를 옮기지 않을 폴더(예: `E:\llm-session-db`)에 두고 더블클릭하면 관리 창이 열립니다.
 
-# 관리 창 열기 → "서버" 탭에서 자동 실행 등록(지금 시작), PC 등록(토큰 발급), 비밀번호 설정
-.venv\Scripts\python -m server
-```
+1. **서버** 탭: 자동 실행 등록(로그인 시 시작 + 지금 시작), PC 등록으로 이 PC와 다른 PC의 토큰 발급, 원격 접속이면 비밀번호 설정
+2. **설정** 탭: 이 PC의 세션도 모으려면 서버 주소 `http://127.0.0.1:8765`와 방금 발급한 토큰 저장
+3. **상태** 탭: 에이전트 자동 실행 등록
 
-같은 작업을 명령으로 하려면:
+DB·로그·작업 폴더는 exe 옆의 `data\`에 생깁니다(환경 변수 `LSDB_DATA_DIR`로 변경). 명령으로 하려면 서버 명령은 그대로, 에이전트 명령은 `agent` 뒤에 씁니다.
 
 ```powershell
-.venv\Scripts\python -m server add-machine home-pc   # 토큰이 한 번만 표시되니 보관
-.venv\Scripts\python -m server install               # 로그인 시 자동 실행 등록 + 지금 백그라운드로 시작 (기본 http://127.0.0.1:8765)
+.\LlmSessionServer_vX.Y.Z.exe add-machine home-pc     # 토큰이 한 번만 표시되니 보관
+.\LlmSessionServer_vX.Y.Z.exe install                 # 서버 자동 실행 등록 + 지금 시작 (기본 http://127.0.0.1:8765)
+.\LlmSessionServer_vX.Y.Z.exe agent setup --server http://127.0.0.1:8765 --token <토큰>
+.\LlmSessionServer_vX.Y.Z.exe agent install           # 이 PC 에이전트 자동 실행 등록 + 지금 시작
 ```
 
-포그라운드로 실행하려면 `install` 대신 `.venv\Scripts\python -m server serve`를 쓰세요. DB와 로그는 `data/`에 저장됩니다.
+새 버전으로 바꿀 때는 서버 탭(또는 `stop`, `agent stop`)으로 둘 다 멈추고 새 exe를 같은 폴더에 둔 뒤 다시 자동 실행 등록합니다(등록 명령에 exe 경로가 들어가므로).
 
 ### 2. 에이전트 (서버 PC 포함, 세션을 모을 모든 PC)
 
-Python이 있는 PC는 `python -m agent`, Python이 없는 PC는 [Releases](https://github.com/huny4daniel/llm-session-db_v/releases)의 `LlmSessionAgent_vX.Y.Z.exe`를 옮기지 않을 위치에 두고 더블클릭하면 관리 창이 열립니다.
+`LlmSessionAgent_vX.Y.Z.exe`를 옮기지 않을 위치에 두고 더블클릭하면 관리 창이 열립니다.
 
 1. **설정** 탭: 서버 주소와 토큰을 넣고 저장 → 연결 확인
 2. **상태** 탭: 자동 실행 등록(로그인 시 창 없이 실행 + 지금 시작), 미전송 파일 확인, 로그 열기
 
-같은 작업을 명령으로 하려면(exe도 같은 명령을 받습니다):
+같은 작업을 명령으로 하려면:
 
 ```powershell
-python -m agent setup --server http://127.0.0.1:8765 --token <토큰>
-python -m agent status     # 서버 연결·미전송 파일 확인
-python -m agent install    # 로그인 시 창 없이 자동 실행 + 지금 시작
+.\LlmSessionAgent_vX.Y.Z.exe setup --server http://<서버 주소>:8765 --token <토큰>
+.\LlmSessionAgent_vX.Y.Z.exe status     # 서버 연결·미전송 파일 확인
+.\LlmSessionAgent_vX.Y.Z.exe install    # 로그인 시 창 없이 자동 실행 + 지금 시작
 ```
 
 설정·로그는 `~/.llm-session-db/`에 저장됩니다.
@@ -143,7 +148,7 @@ python -m agent pull <세션 ID 앞부분> --run
 
 ## 명령어
 
-명령 없이 실행하면 관리 창(GUI)이 열립니다. 아래 명령은 같은 기능의 CLI입니다.
+명령 없이 실행하면 관리 창(GUI)이 열립니다. 아래 명령은 같은 기능의 CLI입니다. exe에서는 `python -m server`를 `LlmSessionServer_vX.Y.Z.exe`로, `python -m agent`를 `LlmSessionAgent_vX.Y.Z.exe`(서버 exe에서는 `LlmSessionServer_vX.Y.Z.exe agent`)로 바꿔 읽으세요.
 
 ### 서버 — `python -m server <명령>`
 
@@ -174,7 +179,7 @@ python -m agent pull <세션 ID 앞부분> --run
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `LSDB_DATA_DIR` | `data/` | 서버 DB·로그·작업 폴더 위치 |
+| `LSDB_DATA_DIR` | exe 옆 `data\` (저장소 실행은 프로젝트 `data/`) | 서버 DB·로그·작업 폴더 위치 |
 | `LSDB_AGENT_CONFIG` | `~/.llm-session-db/agent.json` | 에이전트 설정 파일 (같은 폴더에 로그·잠금 파일) |
 | `LSDB_CLAUDE_ROOT` | `~/.claude/projects` | 서버가 웹 이어가기에 쓰는 Claude Code 세션 폴더 |
 | `LSDB_CLAUDE_BIN` | PATH의 `claude` | claude 실행 파일 경로 |
@@ -197,12 +202,16 @@ python -m agent pull <세션 ID 앞부분> --run
 ## 개발
 
 ```powershell
+git clone https://github.com/huny4daniel/llm-session-db_v.git
+cd llm-session-db_v
+python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 .venv\Scripts\python -m pytest
+.venv\Scripts\python -m server serve --port 8790   # 개발용 서버(실제 설치와 포트·데이터 폴더를 분리)
 ```
 
 - 테스트는 실제 Claude Code를 실행하지 않고 `tests/fake_claude.py`로 CLI 출력을 흉내 냅니다. GUI 테스트는 창을 띄우지 않고 위젯만 만들어 확인합니다.
-- `v*` 태그를 푸시하면 GitHub Actions가 에이전트 exe를 빌드해 릴리즈에 첨부합니다(같은 major.minor의 이전 릴리즈는 삭제).
+- `v*` 태그를 푸시하면 GitHub Actions가 서버 exe와 에이전트 exe를 빌드해 릴리즈에 첨부합니다(같은 major.minor의 이전 릴리즈는 삭제).
 - 설계 배경, 검증된 CLI 동작, 코드 구조는 [CLAUDE.md](CLAUDE.md)에 정리되어 있습니다.
 
 ## 로드맵
