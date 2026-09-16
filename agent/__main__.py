@@ -15,6 +15,13 @@ from .sync import sync_once
 log = logging.getLogger("agent")
 
 
+def configure_console() -> None:
+    """콘솔·파이프 인코딩(cp949 등)에 없는 글자 때문에 CLI 출력이 죽지 않게 한다."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 def cli_name() -> str:
     """도움말·안내 문구에 쓸 실행 명령. exe로 묶였으면 exe 이름(서버 exe는 `agent` 접두어 포함)을 쓴다."""
     if not autostart.frozen():
@@ -23,6 +30,7 @@ def cli_name() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_console()
     parser = argparse.ArgumentParser(
         prog=cli_name(), description="LLM 세션 수집 에이전트 (명령 없이 실행하면 GUI 창을 엽니다)"
     )

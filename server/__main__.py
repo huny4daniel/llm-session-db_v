@@ -5,10 +5,13 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
+from agent.__main__ import configure_console
+
 from . import auth, config, db, ingest, machines, queries, service
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_console()
     parser = argparse.ArgumentParser(
         prog=cli_name(), description="LLM 세션 수집 서버 (명령 없이 실행하면 GUI 창을 엽니다. 에이전트 명령은 `agent` 뒤에)"
     )
