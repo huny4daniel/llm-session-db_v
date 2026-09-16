@@ -13,6 +13,7 @@ Claude Code는 세션을 실행한 폴더 기준으로 각 PC의 `~/.claude/proj
 - **웹에서 이어가기** — 서버 PC에서 Claude Code를 실행해 응답을 실시간으로 보여 줍니다. 허용할 도구(파일 수정·명령 실행·웹)를 고르고, 거부된 도구는 허용 후 계속 진행할 수 있습니다.
 - **다른 PC로 가져와 이어가기** — `agent pull`로 서버의 세션을 가져와 그 PC에서 `claude`로 이어갑니다. 이어간 기록은 새 세션으로 수집되고 원본과 자동으로 연결됩니다.
 - **원격 접속·보안** — 웹 UI 비밀번호 로그인, PC별 에이전트 토큰, Windows 로그인 시 자동 실행
+- **GUI 관리 창** — 명령 없이 실행하면 창이 열립니다. 에이전트 설정·상태·자동 실행·가져오기를 탭에서 다루고, 서버 PC에서는 서버 시작·중지, PC 등록(토큰 발급), 비밀번호 설정 탭이 더 붙습니다. 모든 기능은 CLI 명령으로도 됩니다.
 
 ## 구성
 
@@ -37,7 +38,7 @@ flowchart LR
 | 구성요소 | 설명 |
 |---|---|
 | `server/` | FastAPI 서버. 원본 줄을 그대로 보관하고 세션·메시지·사용량을 파생 테이블로 정리, 웹 UI 제공 |
-| `agent/` | 표준 라이브러리만 쓰는 수집 에이전트. 원격 PC에는 Python 또는 릴리즈의 exe만 있으면 됩니다 |
+| `agent/` | 표준 라이브러리만 쓰는 수집 에이전트와 tkinter GUI 창. 원격 PC에는 Python 또는 릴리즈의 exe만 있으면 됩니다 |
 
 ## 요구 사항
 
@@ -55,30 +56,32 @@ cd llm-session-db_v
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 
-# 에이전트용 PC 등록 → 토큰이 한 번만 표시되니 보관
-.venv\Scripts\python -m server add-machine home-pc
+# 관리 창 열기 → "서버" 탭에서 자동 실행 등록(지금 시작), PC 등록(토큰 발급), 비밀번호 설정
+.venv\Scripts\python -m server
+```
 
-# 로그인 시 자동 실행 등록 + 지금 백그라운드로 시작 (기본 http://127.0.0.1:8765)
-.venv\Scripts\python -m server install
+같은 작업을 명령으로 하려면:
+
+```powershell
+.venv\Scripts\python -m server add-machine home-pc   # 토큰이 한 번만 표시되니 보관
+.venv\Scripts\python -m server install               # 로그인 시 자동 실행 등록 + 지금 백그라운드로 시작 (기본 http://127.0.0.1:8765)
 ```
 
 포그라운드로 실행하려면 `install` 대신 `.venv\Scripts\python -m server serve`를 쓰세요. DB와 로그는 `data/`에 저장됩니다.
 
 ### 2. 에이전트 (서버 PC 포함, 세션을 모을 모든 PC)
 
-Python이 있는 PC:
+Python이 있는 PC는 `python -m agent`, Python이 없는 PC는 [Releases](https://github.com/huny4daniel/llm-session-db_v/releases)의 `LlmSessionAgent_vX.Y.Z.exe`를 옮기지 않을 위치에 두고 더블클릭하면 관리 창이 열립니다.
+
+1. **설정** 탭: 서버 주소와 토큰을 넣고 저장 → 연결 확인
+2. **상태** 탭: 자동 실행 등록(로그인 시 창 없이 실행 + 지금 시작), 미전송 파일 확인, 로그 열기
+
+같은 작업을 명령으로 하려면(exe도 같은 명령을 받습니다):
 
 ```powershell
 python -m agent setup --server http://127.0.0.1:8765 --token <토큰>
 python -m agent status     # 서버 연결·미전송 파일 확인
 python -m agent install    # 로그인 시 창 없이 자동 실행 + 지금 시작
-```
-
-Python이 없는 PC는 [Releases](https://github.com/huny4daniel/llm-session-db_v/releases)의 `LlmSessionAgent_vX.Y.Z.exe`를 옮기지 않을 위치에 두고 같은 명령을 씁니다.
-
-```powershell
-.\LlmSessionAgent_vX.Y.Z.exe setup --server http://<서버 주소>:8765 --token <토큰>
-.\LlmSessionAgent_vX.Y.Z.exe install
 ```
 
 설정·로그는 `~/.llm-session-db/`에 저장됩니다.
@@ -88,14 +91,14 @@ Python이 없는 PC는 [Releases](https://github.com/huny4daniel/llm-session-db_
 > 아래 절차는 설계상 동작하도록 만들었지만, 아직 Tailscale 환경에서 실제로 검증하지 않았습니다.
 
 1. 서버 PC와 각 PC에 [Tailscale](https://tailscale.com/)을 설치하고 같은 계정으로 로그인합니다.
-2. 서버 PC에서 웹 UI 비밀번호를 설정합니다. 비밀번호를 설정하면 이 PC에서 접속할 때도 로그인이 필요합니다.
+2. 서버 PC에서 웹 UI 비밀번호를 설정합니다(관리 창 서버 탭 또는 아래 명령). 비밀번호를 설정하면 이 PC에서 접속할 때도 로그인이 필요합니다.
    ```powershell
    .venv\Scripts\python -m server set-password
    ```
 3. 서버를 사설망에 공개합니다.
    - 권장: 서버는 기본 주소(127.0.0.1) 그대로 두고 `tailscale serve --bg 8765`로 tailnet에만 HTTPS로 노출
-   - 또는: `python -m server install --host <서버의 Tailscale IP>`
-4. 원격 PC마다 `add-machine`으로 토큰을 발급해 에이전트를 설정합니다.
+   - 또는: 관리 창 서버 탭에서 주소를 서버의 Tailscale IP로 바꿔 자동 실행 등록(`python -m server install --host <IP>`와 같음)
+4. 원격 PC마다 서버 탭의 PC 등록(또는 `add-machine`)으로 토큰을 발급해 에이전트를 설정합니다.
 
 비밀번호 없이 루프백이 아닌 주소로 서버를 열려고 하면 거부됩니다. 서버를 공인 인터넷에 직접 노출하지 마세요.
 
@@ -126,7 +129,9 @@ Python이 없는 PC는 [Releases](https://github.com/huny4daniel/llm-session-db_
 
 ### 다른 PC로 가져와 이어가기
 
-세션 화면의 **다른 PC로 가져와 이어가기** 명령을 복사해, 에이전트가 설정된 PC에서 실행합니다.
+이어갈 PC에서 관리 창의 **가져와 이어가기** 탭을 엽니다. 서버의 세션 목록을 불러와 고르고, 작업 폴더를 정한 뒤 **claude 실행**을 누르면 새 터미널 창에서 이어집니다. **명령 복사**는 실행 대신 명령만 클립보드에 담습니다.
+
+명령으로 하려면 웹 세션 화면의 **다른 PC로 가져와 이어가기** 명령을 복사해 실행합니다.
 
 ```powershell
 python -m agent pull <세션 ID 앞부분> --run
@@ -138,12 +143,16 @@ python -m agent pull <세션 ID 앞부분> --run
 
 ## 명령어
 
+명령 없이 실행하면 관리 창(GUI)이 열립니다. 아래 명령은 같은 기능의 CLI입니다.
+
 ### 서버 — `python -m server <명령>`
 
 | 명령 | 설명 |
 |---|---|
+| `gui` | 관리 창 열기(기본) |
 | `serve [--host] [--port] [--log-file]` | 서버 실행 |
 | `install [--host] [--port] [--no-start]` / `uninstall` | Windows 로그인 시 자동 실행 등록·해제 |
+| `stop [--host] [--port]` | 백그라운드 서버 종료 |
 | `set-password [--stdin]` / `clear-password` | 웹 UI 비밀번호 설정·제거 |
 | `add-machine <이름>` / `rotate-token <이름>` / `machines` | 에이전트 PC 등록·토큰 재발급·목록 |
 | `delete-session <번호\|세션 ID>...` | 세션 삭제 (PC의 원본 파일은 남고 다시 수집되지 않음) |
@@ -153,10 +162,12 @@ python -m agent pull <세션 ID 앞부분> --run
 
 | 명령 | 설명 |
 |---|---|
+| `gui` | 관리 창 열기(기본) |
 | `setup --server <URL> --token <토큰> [--claude-root]` | 설정 저장 |
 | `run [--once] [--interval 초] [--log-file]` | 수집 실행 (기본 30초 간격 반복) |
 | `status` | 설정·자동 실행·실행 여부·서버 연결·미전송 파일 |
 | `install [--interval] [--no-start]` / `uninstall` | 로그인 시 자동 실행 등록·해제 |
+| `stop` | 백그라운드 에이전트 종료 |
 | `pull <번호\|세션 ID> [--dir] [--run]` | 서버 세션을 이 PC로 가져와 이어가기 |
 
 ### 환경 변수
@@ -190,7 +201,7 @@ python -m agent pull <세션 ID 앞부분> --run
 .venv\Scripts\python -m pytest
 ```
 
-- 테스트는 실제 Claude Code를 실행하지 않고 `tests/fake_claude.py`로 CLI 출력을 흉내 냅니다.
+- 테스트는 실제 Claude Code를 실행하지 않고 `tests/fake_claude.py`로 CLI 출력을 흉내 냅니다. GUI 테스트는 창을 띄우지 않고 위젯만 만들어 확인합니다.
 - `v*` 태그를 푸시하면 GitHub Actions가 에이전트 exe를 빌드해 릴리즈에 첨부합니다(같은 major.minor의 이전 릴리즈는 삭제).
 - 설계 배경, 검증된 CLI 동작, 코드 구조는 [CLAUDE.md](CLAUDE.md)에 정리되어 있습니다.
 
@@ -200,5 +211,6 @@ python -m agent pull <세션 ID 앞부분> --run
 - [x] 원격 접속: 로그인·자동 실행·에이전트 exe
 - [x] 웹에서 이어가기
 - [x] 다른 PC로 가져와 이어가기
+- [x] GUI 관리 창 (에이전트·서버)
 - [ ] Codex CLI 세션 지원
 - [ ] Tailscale 원격 접속 실사용 검증

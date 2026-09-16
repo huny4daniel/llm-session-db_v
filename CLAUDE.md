@@ -15,6 +15,7 @@
 | 서버 | 집 PC (Windows, 현재 개발 PC) | 세션 수신·저장, 검색 인덱스, 통계, 웹 UI, 웹 이어가기(B) 실행 |
 | 수집 에이전트 | 모든 클라이언트 PC (서버 PC 포함) | 세션 파일 증분 업로드, 세션 가져오기·resume 실행(A) |
 | 웹 UI | 서버가 직접 제공 | 세션 목록·대화 뷰·검색·통계·웹 채팅 |
+| 관리 GUI | 모든 PC (`python -m agent`/`server` 또는 exe를 명령 없이 실행) | tkinter 창. 에이전트 설정·상태·자동 실행·가져오기 탭, 서버 패키지가 있는 PC에서는 서버 시작·중지·PC 등록·비밀번호 탭 추가. CLI 명령은 그대로 남겨 자동 실행(`run`)·스크립트에 쓴다 |
 
 - 서버 PC의 세션도 원격 PC와 **같은 에이전트 경로**로 수집한다(수집 로직 단일화).
 - 원격 접속은 Tailscale 사설망 + 토큰 인증. 서버를 공인 인터넷에 직접 노출하지 않는다.
@@ -23,7 +24,7 @@
 
 - Python 3.13
 - 서버: FastAPI, SQLite(FTS5 전문 검색), SSE(웹 이어가기 스트리밍 — 추가 패키지 없이 재연결·이어받기 지원)
-- 에이전트: Python 스크립트(Windows 백그라운드 실행)
+- 에이전트: Python 스크립트(Windows 백그라운드 실행), 관리 GUI는 tkinter(표준 라이브러리, exe에 추가 의존성 없음)
 - 웹 UI: 서버에서 정적 파일로 제공(별도 프론트엔드 빌드 없이 시작)
 
 ## 데이터 소스
@@ -87,7 +88,7 @@ headless (`-p`)
 - 수집: 같은 ID 파일이 여러 폴더에 있으면 한 세션(machine·source·session_uid)으로 합쳐지므로 세션 내 메시지 `uuid` 기준으로 중복을 거르고, 대화 뷰는 시간순으로 정렬한다(적용됨).
 
 ### A. 로컬로 가져와서 이어가기
-구현: `agent/pull.py`, `python -m agent pull <세션 번호|세션 ID 앞부분> [--dir 폴더] [--run]`, 서버 `GET /api/agent/sessions/{ref}/source`(PC 토큰 인증), 웹 세션 화면의 가져오기 명령 복사.
+구현: `agent/pull.py`, `python -m agent pull <세션 번호|세션 ID 앞부분> [--dir 폴더] [--run]`, GUI "가져와 이어가기" 탭(목록은 `GET /api/agent/sessions`, 실행은 새 콘솔 창), 서버 `GET /api/agent/sessions/{ref}/source`(PC 토큰 인증), 웹 세션 화면의 가져오기 명령 복사.
 
 1. 에이전트가 서버에서 세션 정보와 메인 파일 원본 줄을 받는다.
 2. 이 PC에 원본 세션 파일이 있으면(원래 PC) 가져오지 않고 `claude --resume <uid>`로 그대로 이어간다.
@@ -141,12 +142,13 @@ headless (`-p`)
 
 ## 개발 단계
 
-1. **서버 코어** (v0.0.1 완료): DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
-   - 미완: 다른 cwd로 옮긴 세션 파일이 `--resume <ID>`로 정상 동작하는지 검증 (4단계 전에 실행)
-2. **원격 접속**: 웹 UI 비밀번호 로그인, 에이전트·서버 백그라운드 자동 실행(로그 파일·중복 실행 방지), `agent status`, Tailscale 연결 안내
-3. **웹 이어가기(B)**: headless CLI 실행 + SSE 스트리밍, 도구 허용 묶음, 중단, fork 부모 연결
-4. **로컬 가져오기(A)**: `agent pull`, 가져오기 사본 + fork, uuid 겹침으로 부모 자동 연결
-5. **Codex 지원**: 실제 샘플 기반 파서 작성
+1. **서버 코어** (v0.0.1): DB 스키마, Claude Code 파서, 서버 PC 세션 수집, 웹 목록·대화 뷰·검색·토큰 통계
+2. **원격 접속** (v0.0.2): 웹 UI 비밀번호 로그인, 에이전트·서버 백그라운드 자동 실행(로그 파일·중복 실행 방지), `agent status`, Tailscale 연결 안내(미검증)
+   - v0.0.3: 세션 내 메시지 uuid 중복 제거, 세션 삭제(재수집 방지 표시)
+3. **웹 이어가기(B)** (v0.0.4): headless CLI 실행 + SSE 스트리밍, 도구 허용 묶음, 중단, fork 부모 연결
+4. **로컬 가져오기(A)** (v0.0.5): `agent pull`, 가져오기 사본 + fork, uuid 겹침으로 부모 자동 연결
+5. **관리 GUI** (v0.0.6): tkinter 창으로 에이전트 설정·상태·자동 실행·가져오기, 서버 시작·중지·PC 등록·비밀번호. 명령 없이 실행하면 GUI, 기존 CLI 명령 유지. 백그라운드 프로세스는 PID 파일(`agent.pid`, `data/server.pid`)로 중지.
+6. **Codex 지원** (보류, 2026-09-15 사용자 결정): Codex를 실제로 쓰게 되면 진행. 개발 PC에 Codex CLI·세션이 없어 실제 샘플 확보(설치·로그인·대화)부터 시작하고, 파서·에이전트 탐색·이어가기(`codex resume` 동작 실험)를 추가한다. DB `source` 컬럼·`PARSERS` 등록 구조는 준비되어 있다.
 
 ## 개발 규칙
 
@@ -154,6 +156,7 @@ headless (`-p`)
 - 커밋 규칙은 전역 CLAUDE.md를 따른다.
 - 실제 `~/.claude`, `~/.codex` 파일은 **읽기 전용**으로만 다룬다. 테스트에서 쓰기가 필요하면 임시 디렉터리에 복사해 사용한다. 예외: 웹 이어가기의 가져오기 사본(`llm-session-db-import` 폴더)과 A 방식의 실제 복원 기능.
 - 실제 CLI를 실행하는 테스트는 만들지 않는다. `tests/fake_claude.py`(stream-json 흉내)로 대체한다.
+- GUI 테스트는 숨긴 `tk.Tk()`에 `App(root)`를 붙여 위젯을 만들고, 스레드 작업 결과는 `agent.gui.dispatch_finished()`로 직접 처리한다(메인 루프 없이 검증). GUI 코드는 얇게 두고 로직은 `status`·`service`·`pull` 모듈에 둔다.
 - Codex의 SQLite는 CLI가 사용 중일 수 있으므로 복사본 또는 읽기 전용 연결로 접근한다.
 - 파서 테스트용 샘플은 민감정보를 제거한 축약본만 저장소에 둔다.
 
@@ -169,10 +172,15 @@ headless (`-p`)
 | `server/static/` | 웹 UI(프레임워크 없는 단일 페이지, 해시 라우팅) |
 | `server/auth.py` | 웹 UI 비밀번호·로그인 쿠키·로컬 요청 판별·로그인 시도 제한 |
 | `server/runner.py` | 웹 이어가기: 이어갈 방식 결정, CLI 실행·이벤트 변환·중단, fork 부모 기록 |
+| `server/service.py` | 백그라운드 서버 관리(HTTP로 실행 확인, PID 파일로 중지, 자동 실행 등록). CLI `install`/`stop`과 GUI 서버 탭 공유 |
+| `server/gui.py` | GUI 서버 탭(`ServerPanel`): 서버 시작·중지·자동 실행, PC 등록·토큰 재발급, 비밀번호 설정 |
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
 | `agent/autostart.py` | HKCU Run 키 자동 실행 등록(서버 CLI도 공유). Run 키는 작업 디렉터리를 못 정하므로 `-c`로 프로젝트 경로를 넣어 실행 |
 | `agent/lock.py` | 잠금 파일로 에이전트 중복 실행 방지 |
-| `agent/pull.py` | 서버 세션을 이 PC로 가져와 이어가기(가져오기 사본·작업 폴더 결정·claude 실행) |
+| `agent/service.py` | 백그라운드 에이전트 관리(잠금으로 실행 확인, PID 파일로 중지, 자동 실행 등록). CLI와 GUI 공유 |
+| `agent/status.py` | 설정·자동 실행·서버 연결·미전송 파일 보고(`StatusReport`). CLI `status`와 GUI 상태 탭 공유 |
+| `agent/gui.py` | tkinter 관리 창(설정·상태·가져오기 탭). 서버 패키지를 불러올 수 있으면 `server.gui.ServerPanel`을 탭으로 붙인다. 오래 걸리는 작업은 스레드 → 큐 → 메인 루프 폴링(`start_dispatcher`)으로 반영 |
+| `agent/pull.py` | 서버 세션을 이 PC로 가져와 이어가기. 계획(`plan_pull`) → 사본(`prepare_copy`) → 실행(`launch`, GUI는 새 콘솔 창) 단계로 나눠 CLI·GUI가 공유 |
 | `agent/claude_cli.py` | claude 실행 파일 찾기·물려받은 세션 환경 변수 제거(서버 웹 이어가기와 공유) |
 | `packaging/agent_entry.py` | 에이전트 exe(PyInstaller) 진입점 |
 | `tests/` | pytest. `tests/samples.py`는 실제 구조를 흉내 낸 합성 세션 |
@@ -188,34 +196,37 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 
 # 서버 (기본 127.0.0.1:8765, DB·server.log는 data/ — LSDB_DATA_DIR로 변경)
+.venv\Scripts\python -m server                        # 관리 GUI(서버 탭: 시작·중지·자동 실행·PC 등록·비밀번호)
 .venv\Scripts\python -m server add-machine home-pc     # PC별 토큰 발급(한 번만 표시)
 .venv\Scripts\python -m server set-password            # 원격 접속 시 필수(설정하면 로컬도 로그인 필요)
 .venv\Scripts\python -m server serve                   # 포그라운드 실행
 .venv\Scripts\python -m server install                 # 로그인 시 자동 실행 등록 + 지금 백그라운드 시작
 .venv\Scripts\python -m server uninstall
 
-# 에이전트 (설정·agent.log·agent.lock: ~/.llm-session-db/ — LSDB_AGENT_CONFIG로 변경)
+# 에이전트 (설정·agent.log·agent.lock·agent.pid: ~/.llm-session-db/ — LSDB_AGENT_CONFIG로 변경)
+python -m agent                 # 관리 GUI(설정·상태·가져오기 탭). exe는 더블클릭
 python -m agent setup --server http://<서버>:8765 --token <토큰>
 python -m agent run             # 포그라운드 30초 간격, --once는 한 번만
 python -m agent status          # 설정·자동 실행·서버 연결·미전송 파일
 python -m agent pull <번호|ID>  # 서버 세션을 이 PC로 가져와 이어가기(--dir 폴더, --run 바로 실행)
 python -m agent install         # 로그인 시 자동 실행(pythonw, 창 없음) + 지금 시작
 python -m agent uninstall
+python -m agent stop            # 백그라운드 에이전트 종료(PID 파일 기준)
 
 # 테스트
 .venv\Scripts\python -m pytest
 ```
 
 - 에이전트는 표준 라이브러리만 쓰므로 원격 PC에는 Python과 저장소의 `agent/` 폴더만 있으면 된다.
-- Python이 없는 PC는 GitHub Release의 `LlmSessionAgent_vX.Y.Z.exe`를 쓴다. 명령은 같다(`LlmSessionAgent_vX.Y.Z.exe setup ...`, `status`, `install`). exe로 `install`하면 exe 자신이 자동 실행에 등록되므로 exe를 옮기지 않을 위치에 둔다.
+- Python이 없는 PC는 GitHub Release의 `LlmSessionAgent_vX.Y.Z.exe`를 쓴다. 더블클릭하면 GUI, 명령은 같다(`LlmSessionAgent_vX.Y.Z.exe setup ...`, `status`, `install`). exe로 `install`하면 exe 자신이 자동 실행에 등록되므로 exe를 옮기지 않을 위치에 둔다.
 
 ## 릴리즈
 
 - `v*` 태그 푸시 → `.github/workflows/release.yml`이 에이전트 exe를 빌드해 릴리즈에 첨부하고, 같은 major.minor의 기존 릴리즈를 삭제한다.
-- 진입점은 `packaging/agent_entry.py`. 에이전트는 CLI라 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 로그인 자동 실행처럼 콘솔을 직접 띄울 때만 창 숨김).
+- 진입점은 `packaging/agent_entry.py`. GUI와 CLI를 한 exe로 제공하므로 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생길 때만 창을 숨겨 GUI만 보임). GUI에서 claude 실행은 `CREATE_NEW_CONSOLE`로 새 터미널을 띄운다.
 - 서버는 이 PC에서 저장소 + venv로 실행하므로 exe로 배포하지 않는다.
 - 로컬 빌드 확인: `.venv\Scripts\pip install pyinstaller` 후 위 워크플로와 같은 옵션으로 `pyinstaller` 실행(`build/`, `dist/`, `*.spec`은 gitignore).
-- `uninstall`은 등록만 해제한다. 이미 실행 중인 프로세스는 직접 종료한다.
+- `uninstall`은 등록만 해제한다. 실행 중인 프로세스는 `stop`(또는 GUI 중지)으로 종료한다. PID 파일이 없는 이전 버전 프로세스는 작업 관리자에서 직접 종료한다.
 
 ## 원격 접속 (Tailscale)
 

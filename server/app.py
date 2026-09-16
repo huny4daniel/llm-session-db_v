@@ -125,6 +125,13 @@ def create_app(db_path: str | Path | None = None, runs: runner.RunManager | None
             raise HTTPException(status_code=400, detail=str(e))
         return {"accepted": len(body.lines), "next_offset": next_offset}
 
+    @app.get("/api/agent/sessions")
+    def agent_sessions(conn: Conn, machine: Machine, q: str = "", limit: Annotated[int, Query(ge=1, le=200)] = 50):
+        """가져오기(agent pull) 대상을 고르기 위한 세션 목록(최근 활동 순)."""
+        keys = ("id", "session_uid", "title", "project_path", "machine_name", "last_activity_at", "user_turns")
+        result = queries.list_sessions(conn, source="claude", q=q or None, limit=limit)
+        return {"total": result["total"], "items": [{k: s[k] for k in keys} for s in result["items"]]}
+
     @app.get("/api/agent/sessions/{ref}/source")
     def agent_session_source(conn: Conn, machine: Machine, ref: str):
         """다른 PC로 가져가 이어가기(agent pull)용 세션 정보와 메인 파일 원본."""

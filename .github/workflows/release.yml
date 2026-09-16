@@ -25,8 +25,8 @@ jobs:
         run: |
           pip install pyinstaller
 
-      # 에이전트는 CLI라 --windowed 대신 콘솔 빌드를 쓰고,
-      # 로그인 자동 실행처럼 콘솔 창을 직접 띄운 경우에만 창을 숨긴다(터미널에서 실행하면 출력이 보임).
+      # GUI와 CLI를 한 exe로 제공하므로 --windowed 대신 콘솔 빌드를 쓰고,
+      # 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생긴 경우에만 창을 숨긴다(터미널에서 실행하면 출력이 보임).
       - name: 에이전트 exe 빌드
         run: |
           python -m PyInstaller `

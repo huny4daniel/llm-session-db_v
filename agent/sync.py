@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
+from . import config
 from .client import Client, OffsetConflict
-from .collector import LocalFile, iter_batches
+from .collector import LocalFile, discover_claude, iter_batches
 
 MAX_CONFLICT_RETRIES = 3
 
@@ -12,6 +14,12 @@ MAX_CONFLICT_RETRIES = 3
 class SyncResult:
     files: int = 0
     lines: int = 0
+
+
+def sync_once(cfg: config.AgentConfig) -> SyncResult:
+    """설정에 따라 한 번 수집한다(CLI run·GUI '지금 한 번 수집')."""
+    client = Client(cfg.server_url, cfg.token)
+    return sync_files(client, "claude", discover_claude(Path(cfg.claude_root)))
 
 
 def sync_files(client: Client, source: str, files: list[LocalFile]) -> SyncResult:

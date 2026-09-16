@@ -20,6 +20,10 @@ def lock_path() -> Path:
     return state_dir() / "agent.lock"
 
 
+def pid_path() -> Path:
+    return state_dir() / "agent.pid"
+
+
 def default_claude_root() -> Path:
     return Path.home() / ".claude" / "projects"
 

@@ -28,6 +28,11 @@ class Client:
     def ingest(self, payload: dict) -> dict:
         return self._request("POST", "/api/agent/ingest", payload)
 
+    def list_sessions(self, q: str = "", limit: int = 50) -> list[dict]:
+        """가져올 세션을 고를 수 있게 서버의 세션 목록(최근 순)을 받는다."""
+        query = urllib.parse.urlencode({"q": q, "limit": limit})
+        return self._request("GET", f"/api/agent/sessions?{query}")["items"]
+
     def session_source(self, ref: str) -> dict:
         """세션 번호 또는 세션 ID(앞부분)로 세션 정보와 메인 파일 원본 줄을 받는다."""
         return self._request("GET", f"/api/agent/sessions/{urllib.parse.quote(ref, safe='')}/source")

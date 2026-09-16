@@ -5,16 +5,16 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
-from agent import autostart
-
-from . import auth, config, db, ingest, machines, queries
-
-AUTOSTART_NAME = "llm-session-db-server"
+from . import auth, config, db, ingest, machines, queries, service
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m server", description="LLM 세션 수집 서버")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="python -m server", description="LLM 세션 수집 서버 (명령 없이 실행하면 GUI 창을 엽니다)"
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("gui", help="GUI 창 열기(기본). 서버 시작·중지, PC 등록, 비밀번호 설정")
 
     serve = sub.add_parser("serve", help="서버 실행")
     _add_bind_args(serve)
@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     _add_bind_args(install)
     install.add_argument("--no-start", action="store_true", help="등록만 하고 지금 시작하지 않음")
     sub.add_parser("uninstall", help="서버 자동 실행 등록 해제")
+    stop = sub.add_parser("stop", help="백그라운드로 실행 중인 서버 종료")
+    _add_bind_args(stop)
 
     password = sub.add_parser("set-password", help="웹 UI 비밀번호 설정(원격 접속에 필요)")
     password.add_argument("--stdin", action="store_true", help="표준 입력 첫 줄에서 비밀번호를 읽음")
@@ -42,14 +44,20 @@ def main(argv: list[str] | None = None) -> int:
     path = config.db_path()
     db.init_db(path)
 
+    if args.command in (None, "gui"):
+        from agent.gui import main as gui_main
+
+        return gui_main()
     if args.command == "serve":
         return _serve(args, path)
+    if args.command == "stop":
+        return _stop(args)
 
     with closing(db.connect(path)) as conn:
         if args.command == "install":
             return _install(args, conn)
         if args.command == "uninstall":
-            removed = autostart.unregister(AUTOSTART_NAME)
+            removed = service.unregister_autostart()
             print("자동 실행 등록을 해제했습니다. 실행 중인 서버는 그대로이니 필요하면 직접 종료하세요."
                   if removed else "등록된 자동 실행이 없습니다.")
         elif args.command == "set-password":
@@ -126,24 +134,41 @@ def _serve(args, path: Path) -> int:
     options = {}
     if args.log_file:
         options["log_config"] = _file_log_config(config.data_dir() / "server.log")
-    uvicorn.run(create_app(path), host=args.host, port=args.port, **options)
+    service.write_pid()  # GUI·stop 명령이 이 프로세스를 종료할 수 있게 남긴다
+    try:
+        uvicorn.run(create_app(path), host=args.host, port=args.port, **options)
+    finally:
+        service.clear_pid()
     return 0
 
 
 def _install(args, conn: sqlite3.Connection) -> int:
     if _remote_bind_without_password(args.host, conn):
         return 2
-    launch = autostart.launch_args("server", ["serve", "--host", args.host, "--port", str(args.port), "--log-file"])
     try:
-        command = autostart.register(AUTOSTART_NAME, launch)
+        command = service.register_autostart(args.host, args.port)
     except RuntimeError as e:
         print(e, file=sys.stderr)
         return 1
     print(f"로그인 시 자동 실행 등록 완료\n  {command}")
-    if not args.no_start:
-        autostart.start_detached(launch)
-        print(f"백그라운드에서 서버를 시작했습니다: http://{args.host}:{args.port}  (로그: {config.data_dir() / 'server.log'})")
+    if args.no_start:
+        return 0
+    if service.start_background(args.host, args.port):
+        print(f"백그라운드에서 서버를 시작했습니다: {service.url(args.host, args.port)}  (로그: {config.data_dir() / 'server.log'})")
+    else:
+        print("이미 실행 중인 서버가 있어 새로 시작하지 않았습니다.")
     return 0
+
+
+def _stop(args) -> int:
+    if not service.is_running(args.host, args.port):
+        print(f"응답하는 서버가 없습니다: {service.url(args.host, args.port)}")
+        return 0
+    if service.stop_background(args.host, args.port):
+        print("서버를 종료했습니다.")
+        return 0
+    print("서버를 종료하지 못했습니다. serve/install로 시작한 서버가 아니면 작업 관리자에서 직접 종료하세요.", file=sys.stderr)
+    return 1
 
 
 def _set_password(args, conn: sqlite3.Connection) -> int:
