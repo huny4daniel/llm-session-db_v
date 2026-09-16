@@ -59,18 +59,17 @@ flowchart LR
 
 `LlmSessionServer_vX.Y.Z.exe`를 옮기지 않을 폴더(예: `E:\llm-session-db`)에 두고 더블클릭하면 관리 창이 열립니다.
 
-1. **서버** 탭: 자동 실행 등록(로그인 시 시작 + 지금 시작), PC 등록으로 이 PC와 다른 PC의 토큰 발급, 원격 접속이면 비밀번호 설정
-2. **설정** 탭: 이 PC의 세션도 모으려면 서버 주소 `http://127.0.0.1:8765`와 방금 발급한 토큰 저장
-3. **상태** 탭: 에이전트 자동 실행 등록
+1. **서버** 탭: "자동 실행 등록"을 누르면 서버가 로그인 시 시작되고 지금 바로 뜹니다. 이 PC의 에이전트도 `Local`이라는 이름으로 자동 등록되어 함께 시작되므로 서버 PC에서는 토큰을 옮길 필요가 없습니다.
+2. 다른 PC를 붙이려면 같은 탭에서 PC 이름을 넣고 등록해 토큰을 발급합니다. 원격 접속이면 비밀번호도 설정합니다.
 
 DB·로그·작업 폴더는 exe 옆의 `data\`에 생깁니다(환경 변수 `LSDB_DATA_DIR`로 변경). 명령으로 하려면 서버 명령은 그대로, 에이전트 명령은 `agent` 뒤에 씁니다.
 
 ```powershell
-.\LlmSessionServer_vX.Y.Z.exe add-machine home-pc     # 토큰이 한 번만 표시되니 보관
-.\LlmSessionServer_vX.Y.Z.exe install                 # 서버 자동 실행 등록 + 지금 시작 (기본 http://127.0.0.1:8765)
-.\LlmSessionServer_vX.Y.Z.exe agent setup --server http://127.0.0.1:8765 --token <토큰>
-.\LlmSessionServer_vX.Y.Z.exe agent install           # 이 PC 에이전트 자동 실행 등록 + 지금 시작
+.\LlmSessionServer_vX.Y.Z.exe install                 # 서버 자동 실행 등록 + 지금 시작 + 이 PC 에이전트(Local) 등록·시작
+.\LlmSessionServer_vX.Y.Z.exe add-machine laptop      # 다른 PC 등록. 토큰이 한 번만 표시되니 보관
 ```
+
+`Local`은 서버 PC 자신을 뜻하는 고정 이름이라 바꾸거나 지울 수 없습니다.
 
 새 버전으로 바꿀 때는 서버 탭(또는 `stop`, `agent stop`)으로 둘 다 멈추고 새 exe를 같은 폴더에 둔 뒤 다시 자동 실행 등록합니다(등록 명령에 exe 경로가 들어가므로).
 
@@ -156,7 +155,7 @@ python -m agent pull <세션 ID 앞부분> --run
 |---|---|
 | `gui` | 관리 창 열기(기본) |
 | `serve [--host] [--port] [--log-file]` | 서버 실행 |
-| `install [--host] [--port] [--no-start]` / `uninstall` | Windows 로그인 시 자동 실행 등록·해제 |
+| `install [--host] [--port] [--no-start] [--no-agent]` / `uninstall` | Windows 로그인 시 자동 실행 등록·해제. `install`은 이 PC의 에이전트도 `Local`로 등록해 시작 |
 | `stop [--host] [--port]` | 백그라운드 서버 종료 |
 | `set-password [--stdin]` / `clear-password` | 웹 UI 비밀번호 설정·제거 |
 | `add-machine <이름>` / `rotate-token <이름>` / `machines` | 에이전트 PC 등록·토큰 재발급·목록 |

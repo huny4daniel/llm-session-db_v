@@ -446,7 +446,7 @@ class App(ttk.Frame):
         self.notebook.add(self.settings, text="설정")
         self.notebook.add(self.status, text="상태")
         self.notebook.add(self.pull, text="가져와 이어가기")
-        server_panel = _server_panel(self.notebook)
+        server_panel = _server_panel(self.notebook, self.reload_config)
         if server_panel is not None:
             self.notebook.add(server_panel, text="서버")
         self.notebook.pack(fill="both", expand=True)
@@ -462,17 +462,26 @@ class App(ttk.Frame):
         self.cfg = cfg
         self.status.refresh()
 
+    def reload_config(self) -> None:
+        """서버 탭이 이 PC의 에이전트 설정(Local)을 새로 썼을 때 설정 탭·상태 탭을 갱신한다."""
+        try:
+            self.cfg = config.load()
+        except (FileNotFoundError, ValueError, KeyError):
+            return
+        self.settings.load()
+        self.status.refresh()
+
     def client(self) -> Client | None:
         return Client(self.cfg.server_url, self.cfg.token, timeout=30) if self.cfg else None
 
 
-def _server_panel(master) -> ttk.Frame | None:
-    """서버 패키지가 있는 PC(저장소에서 실행)에서만 서버 탭을 만든다. exe에는 서버가 들어 있지 않다."""
+def _server_panel(master, on_local_agent) -> ttk.Frame | None:
+    """서버 패키지가 있는 PC(저장소·서버 exe)에서만 서버 탭을 만든다. 에이전트 exe에는 서버가 들어 있지 않다."""
     try:
         from server.gui import ServerPanel
     except ImportError:
         return None
-    return ServerPanel(master)
+    return ServerPanel(master, on_local_agent=on_local_agent)
 
 
 def main() -> int:

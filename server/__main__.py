@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent.__main__ import configure_console
 
-from . import auth, config, db, ingest, machines, queries, service
+from . import auth, config, db, ingest, local_agent, machines, queries, service
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,9 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     _add_bind_args(serve)
     serve.add_argument("--log-file", action="store_true", help="로그를 데이터 폴더의 server.log에 기록(백그라운드 실행용)")
 
-    install = sub.add_parser("install", help="Windows 로그인 시 서버 자동 실행 등록")
+    install = sub.add_parser("install", help="Windows 로그인 시 서버 자동 실행 등록(이 PC 에이전트도 Local로 등록)")
     _add_bind_args(install)
     install.add_argument("--no-start", action="store_true", help="등록만 하고 지금 시작하지 않음")
+    install.add_argument("--no-agent", action="store_true", help="이 PC의 에이전트(Local)는 등록하지 않음")
     sub.add_parser("uninstall", help="서버 자동 실행 등록 해제")
     stop = sub.add_parser("stop", help="백그라운드로 실행 중인 서버 종료")
     _add_bind_args(stop)
@@ -80,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
             except sqlite3.IntegrityError:
                 print(f"이미 등록된 이름입니다: {args.name}", file=sys.stderr)
                 return 1
+            except ValueError as e:
+                print(e, file=sys.stderr)
+                return 1
             print(f"PC 등록 완료: {args.name}")
             print(f"토큰 (다시 표시되지 않으니 보관하세요): {token}")
         elif args.command == "rotate-token":
@@ -96,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
                 renamed = machines.rename_machine(conn, args.name, args.new_name)
             except sqlite3.IntegrityError:
                 print(f"이미 있는 이름입니다: {args.new_name}", file=sys.stderr)
+                return 1
+            except ValueError as e:
+                print(e, file=sys.stderr)
                 return 1
             if not renamed:
                 print(f"등록되지 않은 이름입니다: {args.name}", file=sys.stderr)
@@ -118,6 +125,9 @@ def _delete_machine(conn: sqlite3.Connection, name: str, yes: bool) -> int:
     machine = next((m for m in machines.list_machines(conn) if m["name"] == name), None)
     if machine is None:
         print(f"등록되지 않은 이름입니다: {name}", file=sys.stderr)
+        return 1
+    if name == machines.PROTECTED_NAME:
+        print(f"{name}은 서버 PC 자신이라 삭제할 수 없습니다.", file=sys.stderr)
         return 1
     if not yes:
         answer = input(f"{name}과(와) 세션 {machine['session_count']}개를 모두 삭제합니다. 계속할까요? [y/N] ")
@@ -166,6 +176,7 @@ def _serve(args, path: Path) -> int:
             return 2
         if not auth.password_enabled(conn):
             print("비밀번호가 설정되지 않아 이 PC에서만 웹 UI에 접속할 수 있습니다.", flush=True)
+        print(local_agent.ensure_local_agent(conn, args.host, args.port).note, flush=True)
 
     import uvicorn
 
@@ -191,12 +202,13 @@ def _install(args, conn: sqlite3.Connection) -> int:
         print(e, file=sys.stderr)
         return 1
     print(f"로그인 시 자동 실행 등록 완료\n  {command}")
-    if args.no_start:
-        return 0
-    if service.start_background(args.host, args.port):
-        print(f"백그라운드에서 서버를 시작했습니다: {service.url(args.host, args.port)}  (로그: {config.data_dir() / 'server.log'})")
-    else:
-        print("이미 실행 중인 서버가 있어 새로 시작하지 않았습니다.")
+    if not args.no_start:
+        if service.start_background(args.host, args.port):
+            print(f"백그라운드에서 서버를 시작했습니다: {service.url(args.host, args.port)}  (로그: {config.data_dir() / 'server.log'})")
+        else:
+            print("이미 실행 중인 서버가 있어 새로 시작하지 않았습니다.")
+    if not args.no_agent:
+        print(local_agent.install_local_agent(conn, args.host, args.port, start=not args.no_start))
     return 0
 
 

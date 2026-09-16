@@ -17,7 +17,7 @@
 | 웹 UI | 서버가 직접 제공 | 세션 목록·대화 뷰·검색·통계·웹 채팅 |
 | 관리 GUI | 모든 PC (`python -m agent`/`server` 또는 exe를 명령 없이 실행) | tkinter 창. 에이전트 설정·상태·자동 실행·가져오기 탭, 서버 패키지가 있는 PC에서는 서버 시작·중지·PC 등록·비밀번호 탭 추가. CLI 명령은 그대로 남겨 자동 실행(`run`)·스크립트에 쓴다 |
 
-- 서버 PC의 세션도 원격 PC와 **같은 에이전트 경로**로 수집한다(수집 로직 단일화).
+- 서버 PC의 세션도 원격 PC와 **같은 에이전트 경로**로 수집한다(수집 로직 단일화). 서버 PC 자신의 에이전트는 고정 이름 `Local`로 자동 등록된다(`server/local_agent.py`): 서버 `install`·`serve` 시 이 PC의 agent.json 토큰이 가리키는 PC를 `Local`로 이름 맞추고, 없으면 `Local`을 만들어 토큰을 발급해 agent.json을 쓴다. `Local`은 이름 변경·삭제·수동 등록 불가.
 - **배포와 개발을 분리한다**(2026-09-16 사용자 결정): 실제 동작은 릴리즈 exe(서버 PC: `LlmSessionServer`, 다른 PC: `LlmSessionAgent`)로만 하고, 프로젝트 폴더·venv는 개발용이다. 실행 중인 서비스가 프로젝트 폴더에 의존하면 안 된다.
 - 원격 접속은 Tailscale 사설망 + 토큰 인증. 서버를 공인 인터넷에 직접 노출하지 않는다.
 
@@ -174,6 +174,7 @@ headless (`-p`)
 | `server/static/` | 웹 UI(프레임워크 없는 단일 페이지, 해시 라우팅) |
 | `server/auth.py` | 웹 UI 비밀번호·로그인 쿠키·로컬 요청 판별·로그인 시도 제한 |
 | `server/runner.py` | 웹 이어가기: 이어갈 방식 결정, CLI 실행·이벤트 변환·중단, fork 부모 기록 |
+| `server/local_agent.py` | 서버 PC 자신의 에이전트를 `Local`로 자동 등록(agent.json 토큰 ↔ machines 대조, 설정 저장, 에이전트 자동 실행 등록) |
 | `server/service.py` | 백그라운드 서버 관리(HTTP로 실행 확인, PID 파일로 중지, 자동 실행 등록). CLI `install`/`stop`과 GUI 서버 탭 공유 |
 | `server/gui.py` | GUI 서버 탭(`ServerPanel`): 서버 시작·중지·자동 실행, PC 등록·토큰 재발급·이름 변경·삭제(세션 포함, 확인 후), 비밀번호 설정 |
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |

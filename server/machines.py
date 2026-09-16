@@ -9,8 +9,10 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def create_machine(conn: sqlite3.Connection, name: str) -> str:
+def create_machine(conn: sqlite3.Connection, name: str, *, allow_protected: bool = False) -> str:
     """PC를 등록하고 평문 토큰을 반환한다. DB에는 해시만 저장한다."""
+    if name == PROTECTED_NAME and not allow_protected:
+        raise ValueError(f"{PROTECTED_NAME}은 서버 PC 자신에게 자동으로 붙는 이름입니다")
     token = secrets.token_urlsafe(32)
     with conn:
         conn.execute(
@@ -27,11 +29,16 @@ def rotate_token(conn: sqlite3.Connection, name: str) -> str | None:
     return token if cur.rowcount else None
 
 
-def rename_machine(conn: sqlite3.Connection, name: str, new_name: str) -> bool:
+PROTECTED_NAME = "Local"  # 서버 PC 자신(server/local_agent.py). 이름 변경·삭제 불가
+
+
+def rename_machine(conn: sqlite3.Connection, name: str, new_name: str, *, allow_protected: bool = False) -> bool:
     """이름만 바꾼다. 세션·수신 위치는 PC 번호로 연결되어 있어 그대로 유지된다. 이름이 겹치면 IntegrityError."""
     new_name = new_name.strip()
     if not new_name:
         raise ValueError("새 이름을 입력하세요")
+    if (name == PROTECTED_NAME or new_name == PROTECTED_NAME) and not allow_protected:
+        raise ValueError(f"{PROTECTED_NAME}은 서버 PC 자신의 이름이라 바꾸거나 붙일 수 없습니다")
     with conn:
         cur = conn.execute("UPDATE machines SET name = ? WHERE name = ?", (new_name, name))
     return bool(cur.rowcount)
@@ -42,6 +49,8 @@ def delete_machine(conn: sqlite3.Connection, name: str) -> int | None:
 
     토큰도 함께 사라지므로 그 PC의 에이전트는 더 이상 올릴 수 없다. 다시 쓰려면 새로 등록해 토큰을 바꿔야 한다.
     """
+    if name == PROTECTED_NAME:
+        raise ValueError(f"{PROTECTED_NAME}은 서버 PC 자신이라 삭제할 수 없습니다")
     row = conn.execute("SELECT id FROM machines WHERE name = ?", (name,)).fetchone()
     if row is None:
         return None

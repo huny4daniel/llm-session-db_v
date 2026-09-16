@@ -13,12 +13,14 @@ from tkinter import messagebox, simpledialog, ttk
 
 from agent.gui import PAD, Message, open_path, run_async
 
-from . import auth, config, db, machines, service
+from . import auth, config, db, local_agent, machines, service
 
 
 class ServerPanel(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, on_local_agent=None):
+        """on_local_agent: 이 PC의 에이전트 설정을 새로 썼을 때 호출(에이전트 탭이 다시 읽도록)."""
         super().__init__(master, padding=10)
+        self.on_local_agent = on_local_agent
         self.host_var = tk.StringVar(value=config.DEFAULT_HOST)
         self.port_var = tk.StringVar(value=str(config.DEFAULT_PORT))
         self.machine_name_var = tk.StringVar()
@@ -141,7 +143,12 @@ class ServerPanel(ttk.Frame):
         def action():
             command = service.register_autostart(*bind)
             started = service.start_background(*bind)
-            return f"로그인 시 자동 실행을 등록했습니다{'. 지금 시작했습니다' if started else ' (이미 실행 중)'}.\n{command}"
+            with closing(self._conn()) as conn:
+                agent_note = local_agent.install_local_agent(conn, *bind)
+            if self.on_local_agent:
+                self.on_local_agent()
+            return (f"로그인 시 자동 실행을 등록했습니다{'. 지금 시작했습니다' if started else ' (이미 실행 중)'}.\n"
+                    f"{command}\n{agent_note}")
 
         self._guard(action)
 
@@ -152,7 +159,7 @@ class ServerPanel(ttk.Frame):
     # ── 에이전트 PC ─────────────────────────────────────────────
 
     def _build_machines_box(self) -> None:
-        box = ttk.LabelFrame(self, text="에이전트 PC (토큰은 발급할 때 한 번만 표시됩니다)", padding=6)
+        box = ttk.LabelFrame(self, text="에이전트 PC (이 PC는 Local로 자동 등록, 토큰은 발급할 때 한 번만 표시)", padding=6)
         box.pack(fill="both", expand=True, pady=(8, 0))
         table = ttk.Frame(box)
         table.pack(fill="both", expand=True)
@@ -206,6 +213,9 @@ class ServerPanel(ttk.Frame):
         except sqlite3.IntegrityError:
             self.message.error(f"이미 등록된 이름입니다: {name}")
             return
+        except ValueError as e:
+            self.message.error(str(e))
+            return
         self.token_var.set(token)
         self.machine_name_var.set("")
         self.load_machines()
@@ -222,6 +232,9 @@ class ServerPanel(ttk.Frame):
         name = self._selected_machine()
         if name is None:
             return
+        if local_agent.is_local(name):
+            self.message.error(f"{name}은 서버 PC 자신이라 이름을 바꿀 수 없습니다.")
+            return
         if new_name is None:
             new_name = simpledialog.askstring("이름 바꾸기", f"{name}의 새 이름 (세션은 그대로 유지됩니다):", initialvalue=name, parent=self)
         if not new_name or new_name.strip() == name:
@@ -232,6 +245,9 @@ class ServerPanel(ttk.Frame):
         except sqlite3.IntegrityError:
             self.message.error(f"이미 있는 이름입니다: {new_name.strip()}")
             return
+        except ValueError as e:
+            self.message.error(str(e))
+            return
         self.load_machines()
         self.tree.selection_set(new_name.strip())
         self.message.info(f"이름을 바꿨습니다: {name} → {new_name.strip()}")
@@ -239,6 +255,9 @@ class ServerPanel(ttk.Frame):
     def delete_machine(self, confirmed: bool | None = None) -> None:
         name = self._selected_machine()
         if name is None:
+            return
+        if local_agent.is_local(name):
+            self.message.error(f"{name}은 서버 PC 자신이라 삭제할 수 없습니다.")
             return
         sessions = self.tree.set(name, "sessions")
         if confirmed is None:
