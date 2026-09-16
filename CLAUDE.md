@@ -238,7 +238,7 @@ python -m agent stop            # 백그라운드 에이전트 종료(PID 파일
 
 ## 원격 접속 (Tailscale)
 
-> 개발 PC에 Tailscale이 설치되어 있지 않아 아래 절차는 아직 실제로 검증하지 않았다.
+> 2026-09-16 서버 PC(Tailscale 기기명 pc)에서 `tailscale serve --bg 8765`까지 검증함: tailnet 안에서 `https://pc.<tailnet>.ts.net`로 웹 API와 에이전트 토큰 인증이 동작했고, 프록시 경유 요청은 원격으로 판별됐다. Serve를 처음 쓰면 관리 콘솔에서 HTTPS 인증서 기능을 켜야 하며(명령이 승인 URL을 띄우고 대기), Funnel은 켜지 않는다(공인 인터넷 노출).
 
 1. 서버 PC와 각 클라이언트 PC에 Tailscale을 설치하고 같은 계정으로 로그인한다.
 2. 서버 PC: `python -m server set-password`
