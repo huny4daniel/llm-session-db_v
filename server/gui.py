@@ -9,7 +9,7 @@ import sqlite3
 import tkinter as tk
 import webbrowser
 from contextlib import closing
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from agent.gui import PAD, Message, open_path, run_async
 
@@ -172,7 +172,10 @@ class ServerPanel(ttk.Frame):
         entry.pack(side="left", padx=(4, 6))
         entry.bind("<Return>", lambda _e: self.add_machine())
         ttk.Button(row, text="등록", command=self.add_machine).pack(side="left", padx=4)
-        ttk.Button(row, text="선택한 PC 토큰 재발급", command=self.rotate_token).pack(side="left", padx=4)
+        ttk.Label(row, text="선택한 PC:").pack(side="left", padx=(12, 2))
+        ttk.Button(row, text="토큰 재발급", command=self.rotate_token).pack(side="left", padx=2)
+        ttk.Button(row, text="이름 바꾸기", command=self.rename_machine).pack(side="left", padx=2)
+        ttk.Button(row, text="삭제", command=self.delete_machine).pack(side="left", padx=2)
 
         token_row = ttk.Frame(box)
         token_row.pack(fill="x", pady=(6, 0))
@@ -208,12 +211,54 @@ class ServerPanel(ttk.Frame):
         self.load_machines()
         self.message.info(f"{name}을(를) 등록했습니다. 토큰을 복사해 그 PC의 에이전트 설정에 넣으세요 (다시 표시되지 않습니다).")
 
-    def rotate_token(self) -> None:
+    def _selected_machine(self) -> str | None:
         chosen = self.tree.selection()
         if not chosen:
             self.message.error("목록에서 PC를 고르세요.")
+            return None
+        return chosen[0]
+
+    def rename_machine(self, new_name: str | None = None) -> None:
+        name = self._selected_machine()
+        if name is None:
             return
-        name = chosen[0]
+        if new_name is None:
+            new_name = simpledialog.askstring("이름 바꾸기", f"{name}의 새 이름 (세션은 그대로 유지됩니다):", initialvalue=name, parent=self)
+        if not new_name or new_name.strip() == name:
+            return
+        try:
+            with closing(self._conn()) as conn:
+                machines.rename_machine(conn, name, new_name)
+        except sqlite3.IntegrityError:
+            self.message.error(f"이미 있는 이름입니다: {new_name.strip()}")
+            return
+        self.load_machines()
+        self.tree.selection_set(new_name.strip())
+        self.message.info(f"이름을 바꿨습니다: {name} → {new_name.strip()}")
+
+    def delete_machine(self, confirmed: bool | None = None) -> None:
+        name = self._selected_machine()
+        if name is None:
+            return
+        sessions = self.tree.set(name, "sessions")
+        if confirmed is None:
+            confirmed = messagebox.askyesno(
+                "PC 삭제",
+                f"{name}과(와) 이 PC의 세션 {sessions}개를 모두 삭제합니다. 되돌릴 수 없습니다.\n"
+                "토큰도 사라지므로 이 PC를 다시 쓰려면 새로 등록해야 합니다. 삭제할까요?",
+                icon="warning", default="no", parent=self,
+            )
+        if not confirmed:
+            return
+        with closing(self._conn()) as conn:
+            count = machines.delete_machine(conn, name)
+        self.load_machines()
+        self.message.info(f"삭제했습니다: {name} (세션 {count}개)")
+
+    def rotate_token(self) -> None:
+        name = self._selected_machine()
+        if name is None:
+            return
         if not messagebox.askyesno("토큰 재발급", f"{name}의 토큰을 새로 발급할까요? 기존 토큰으로는 더 이상 접속할 수 없습니다.", parent=self):
             return
         with closing(self._conn()) as conn:

@@ -167,6 +167,17 @@ def test_server_panel_registers_machine_and_password(db_path, tk_root, monkeypat
     assert token and [m["name"] for m in machines.list_machines(db.connect(db_path))] == ["laptop"]
     assert panel.tree.get_children() == ("laptop",)
 
+    panel.tree.selection_set("laptop")
+    panel.rename_machine("desk")
+    assert [m["name"] for m in machines.list_machines(db.connect(db_path))] == ["desk"]
+    assert panel.tree.selection() == ("desk",)
+    panel.rename_machine("desk")  # 같은 이름이면 아무 일도 없음
+    panel.delete_machine(confirmed=False)
+    assert panel.tree.get_children() == ("desk",)
+    panel.delete_machine(confirmed=True)
+    assert panel.tree.get_children() == ()
+    assert machines.list_machines(db.connect(db_path)) == []
+
     panel.password_var.set("secret-pass")
     panel.confirm_var.set("secret-pass")
     panel.set_password()

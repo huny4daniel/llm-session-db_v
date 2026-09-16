@@ -39,6 +39,12 @@ def main(argv: list[str] | None = None) -> int:
     rotate = sub.add_parser("rotate-token", help="PC 토큰 재발급")
     rotate.add_argument("name")
     sub.add_parser("machines", help="등록된 PC 목록")
+    rename = sub.add_parser("rename-machine", help="PC 이름 변경(세션은 그대로 유지)")
+    rename.add_argument("name")
+    rename.add_argument("new_name")
+    delete_machine = sub.add_parser("delete-machine", help="PC와 그 PC의 세션 전부 삭제")
+    delete_machine.add_argument("name")
+    delete_machine.add_argument("--yes", action="store_true", help="확인 없이 삭제")
     delete = sub.add_parser("delete-session", help="세션 삭제(원본 파일은 PC에 남고 다시 수집되지 않음)")
     delete.add_argument("ids", nargs="+", help="세션 번호(웹 주소 #/session/<번호>) 또는 세션 ID(앞부분만도 가능)")
     sub.add_parser("rebuild", help="원본 이벤트로 파생 데이터 전체 재생성")
@@ -85,6 +91,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "machines":
             for m in machines.list_machines(conn):
                 print(f"{m['id']:>3}  {m['name']:<20} 세션 {m['session_count']:>5}  마지막 수신 {m['last_seen_at'] or '-'}")
+        elif args.command == "rename-machine":
+            try:
+                renamed = machines.rename_machine(conn, args.name, args.new_name)
+            except sqlite3.IntegrityError:
+                print(f"이미 있는 이름입니다: {args.new_name}", file=sys.stderr)
+                return 1
+            if not renamed:
+                print(f"등록되지 않은 이름입니다: {args.name}", file=sys.stderr)
+                return 1
+            print(f"이름을 바꿨습니다: {args.name} → {args.new_name}")
+        elif args.command == "delete-machine":
+            return _delete_machine(conn, args.name, args.yes)
         elif args.command == "delete-session":
             return _delete_sessions(conn, args.ids)
         elif args.command == "rebuild":
@@ -94,6 +112,21 @@ def main(argv: list[str] | None = None) -> int:
 
 def cli_name() -> str:
     return Path(sys.executable).name if getattr(sys, "frozen", False) else "python -m server"
+
+
+def _delete_machine(conn: sqlite3.Connection, name: str, yes: bool) -> int:
+    machine = next((m for m in machines.list_machines(conn) if m["name"] == name), None)
+    if machine is None:
+        print(f"등록되지 않은 이름입니다: {name}", file=sys.stderr)
+        return 1
+    if not yes:
+        answer = input(f"{name}과(와) 세션 {machine['session_count']}개를 모두 삭제합니다. 계속할까요? [y/N] ")
+        if answer.strip().lower() != "y":
+            print("취소했습니다.")
+            return 1
+    count = machines.delete_machine(conn, name)
+    print(f"삭제했습니다: {name} (세션 {count}개). 이 PC의 에이전트는 새 토큰으로 다시 등록해야 합니다.")
+    return 0
 
 
 def _delete_sessions(conn: sqlite3.Connection, ids: list[str]) -> int:

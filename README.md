@@ -160,6 +160,7 @@ python -m agent pull <세션 ID 앞부분> --run
 | `stop [--host] [--port]` | 백그라운드 서버 종료 |
 | `set-password [--stdin]` / `clear-password` | 웹 UI 비밀번호 설정·제거 |
 | `add-machine <이름>` / `rotate-token <이름>` / `machines` | 에이전트 PC 등록·토큰 재발급·목록 |
+| `rename-machine <이름> <새 이름>` / `delete-machine <이름> [--yes]` | PC 이름 변경(세션 유지) · PC와 그 세션 전부 삭제 |
 | `delete-session <번호\|세션 ID>...` | 세션 삭제 (PC의 원본 파일은 남고 다시 수집되지 않음) |
 | `rebuild` | 원본 줄로 파생 데이터 전체 재생성 |
 

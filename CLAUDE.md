@@ -175,7 +175,7 @@ headless (`-p`)
 | `server/auth.py` | 웹 UI 비밀번호·로그인 쿠키·로컬 요청 판별·로그인 시도 제한 |
 | `server/runner.py` | 웹 이어가기: 이어갈 방식 결정, CLI 실행·이벤트 변환·중단, fork 부모 기록 |
 | `server/service.py` | 백그라운드 서버 관리(HTTP로 실행 확인, PID 파일로 중지, 자동 실행 등록). CLI `install`/`stop`과 GUI 서버 탭 공유 |
-| `server/gui.py` | GUI 서버 탭(`ServerPanel`): 서버 시작·중지·자동 실행, PC 등록·토큰 재발급, 비밀번호 설정 |
+| `server/gui.py` | GUI 서버 탭(`ServerPanel`): 서버 시작·중지·자동 실행, PC 등록·토큰 재발급·이름 변경·삭제(세션 포함, 확인 후), 비밀번호 설정 |
 | `agent/` | 수집 에이전트(표준 라이브러리만 사용, 로컬 상태 없이 서버의 파일별 수신 위치 기준으로 증분 전송) |
 | `agent/autostart.py` | HKCU Run 키 자동 실행 등록(서버 CLI도 공유). Run 키는 작업 디렉터리를 못 정하므로 `-c`로 프로젝트 경로를 넣어 실행 |
 | `agent/lock.py` | 잠금 파일로 에이전트 중복 실행 방지 |
