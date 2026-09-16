@@ -37,13 +37,22 @@ def tk_root():
     root.destroy()
 
 
-def drain(widget):
-    """스레드 작업이 끝나 콜백이 실행될 때까지 메인 루프 대신 이벤트를 처리한다."""
+def drain(widget, until=None, timeout=15.0):
+    """스레드 작업이 끝나 콜백이 실행될 때까지 메인 루프 대신 이벤트를 처리한다.
+
+    until이 있으면 그 조건이 참이 될 때까지(최대 timeout초) 기다린다.
+    """
     from agent.gui import dispatch_finished
 
-    for _ in range(50):
+    deadline = time.monotonic() + (timeout if until else 1.0)
+    while True:
         widget.update()
         dispatch_finished()
+        if until is None:
+            if time.monotonic() >= deadline:
+                return
+        elif until() or time.monotonic() >= deadline:
+            return
         time.sleep(0.02)
 
 
@@ -106,7 +115,7 @@ def test_app_without_config_opens_settings_tab(agent_env, tk_root, monkeypatch):
         app.settings.token_var.set("abc")
         app.settings.root_var.set(str(agent_env))
         app.settings.save()
-        drain(app)
+        drain(app, until=lambda: "확인하는 중" not in app.status.text.get("1.0", "end"))
         assert config.load().token == "abc"
         assert app.cfg is not None
         assert "설정 파일" in app.status.text.get("1.0", "end")
@@ -126,7 +135,7 @@ def test_pull_tab_lists_sessions_and_copies_command(api, agent_env, tk_root, mon
     try:
         drain(app)
         app.pull.load()
-        drain(app)
+        drain(app, until=lambda: app.pull.tree.get_children())
         ids = app.pull.tree.get_children()
         assert len(ids) == 1
         app.pull.tree.selection_set(ids[0])
@@ -137,7 +146,7 @@ def test_pull_tab_lists_sessions_and_copies_command(api, agent_env, tk_root, mon
         workdir.mkdir()
         app.pull.workdir_var.set(str(workdir))
         app.pull.copy_command()
-        drain(app)
+        drain(app, until=lambda: "복사했습니다" in app.pull.message.cget("text"))
         expected = f'cd "{workdir.resolve()}"; claude --resume {samples.SESSION} --fork-session'
         assert app.clipboard_get() == expected
         assert (root / "llm-session-db-import" / f"{samples.SESSION}.jsonl").exists()
@@ -202,3 +211,10 @@ def test_default_data_dir_next_to_frozen_exe(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", r"C:\apps\LlmSessionServer.exe")
     assert config.data_dir() == Path(r"C:\apps\data")
+
+
+def test_detached_env_drops_pyinstaller_variables():
+    from agent import autostart
+
+    env = {"PATH": "x", "_PYI_APPLICATION_HOME_DIR": "tmp", "_PYI_ARCHIVE_FILE": "a", "_MEIPASS2": "m", "LSDB_DATA_DIR": "d"}
+    assert autostart.detached_env(env) == {"PATH": "x", "LSDB_DATA_DIR": "d"}

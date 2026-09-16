@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -76,10 +77,20 @@ def registered_command(name: str) -> str | None:
         return None
 
 
+def detached_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """분리 실행할 자식에게 넘길 환경. PyInstaller onefile 부트로더 변수(`_PYI_*`, `_MEIPASS2`)를 뺀다.
+
+    exe가 자기 자신을 다시 실행하면 자식이 부모의 임시 압축 해제 폴더를 그대로 쓰는데,
+    부모(install 명령)가 끝나면서 그 폴더를 지워 자식(serve/run)이 죽는다. 변수를 지우면 자식이 따로 압축을 푼다.
+    """
+    source = os.environ if env is None else env
+    return {k: v for k, v in source.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
+
+
 def start_detached(args: list[str]) -> None:
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     subprocess.Popen(
-        args, creationflags=flags, close_fds=True,
+        args, creationflags=flags, close_fds=True, env=detached_env(),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 

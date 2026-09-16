@@ -232,6 +232,7 @@ python -m agent stop            # 백그라운드 에이전트 종료(PID 파일
 - 진입점은 `packaging/agent_entry.py`(에이전트)와 `packaging/server_entry.py`(서버+에이전트). GUI와 CLI를 한 exe로 제공하므로 전역 표준의 `--windowed` 대신 `--console --hide-console hide-early`로 빌드한다(터미널 실행 시 출력 유지, 더블클릭·로그인 자동 실행처럼 콘솔이 새로 생길 때만 창을 숨겨 GUI만 보임). GUI에서 claude 실행은 `CREATE_NEW_CONSOLE`로 새 터미널을 띄운다.
 - 서버 exe는 `--add-data "server/static;server/static"`으로 웹 UI를 넣고 `--collect-submodules uvicorn`으로 uvicorn이 문자열로 불러오는 모듈을 포함한다. 배포 exe의 기본 데이터 폴더는 exe 옆 `data\`(`server/config.default_data_dir`).
 - 로컬 빌드 확인: `.venv\Scripts\pip install pyinstaller` 후 위 워크플로와 같은 옵션으로 `pyinstaller` 실행(`build/`, `dist/`, `*.spec`은 gitignore).
+- onefile exe가 자기 자신을 백그라운드로 다시 실행할 때(`install` → `serve`/`run`)는 `_PYI_*`·`_MEIPASS2` 환경 변수를 빼고 띄운다(`autostart.detached_env`). 안 빼면 자식이 부모의 임시 압축 해제 폴더를 같이 쓰다가 부모가 끝나며 폴더를 지워 자식이 조용히 죽는다(v0.0.7에서 겪음). 로컬 빌드 후 `exe install --port <임시 포트>`로 백그라운드 기동까지 확인한다.
 - `uninstall`은 등록만 해제한다. 실행 중인 프로세스는 `stop`(또는 GUI 중지)으로 종료한다. PID 파일이 없는 이전 버전 프로세스는 작업 관리자에서 직접 종료한다.
 
 ## 원격 접속 (Tailscale)
